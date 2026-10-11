@@ -1,13 +1,16 @@
 """Local LLM integration via Ollama for tagging and (later) generating quiz content."""
+import ast
 import html
 import json
 import logging
 import math
 import os
+import random
 import re
 import subprocess
 import tempfile
 import time
+from collections import Counter
 from pathlib import Path
 
 from canvigator_utils import selectFromList
@@ -1757,6 +1760,11 @@ _QUIZ_QUESTION_SYSTEM_PROMPT = (
     "  - For multiple_answers_question, supply 4-6 answers with 2 or more weighted 100.\n"
     "  - For true_false_question, supply exactly 2 answers (\"True\" weighted 100 and \"False\" "
     "weighted 0, or vice-versa).\n"
+    "  - For calculated_question, write formulas in Canvas syntax using + - * / ^ (power) and only these "
+    "functions: abs, sqrt, ln, log (base 10), exp, sin, cos, tan, ceil, floor, round, fact, min, max "
+    "(constants pi and e). Every variable must appear in question_text as [name]. Choose variable ranges "
+    "that keep the formula valid (no division by zero, no log of 0). If formula_decimal_places > 0, also "
+    "include \"answer_tolerance\" (e.g. 0.01). Leave answers as [] — answer sets are computed automatically.\n"
 )
 
 
@@ -1871,6 +1879,233 @@ def _parse_quiz_question(content):
     out["answers"] = answers
     out.pop("points_possible", None)
     return out
+
+
+# --- Calculated (Formula) question support -----------------------------------
+# Canvas only generates a Formula question's answer sets (variable values + correct answer) in its
+# browser editor; questions created through the API arrive with none, and a formula sent as
+# {"formula": "..."} is silently dropped. These helpers evaluate the formula locally (a safe subset of
+# Canvas's formula syntax) so create-quiz can preview a worked example and send ready-made answer sets.
+
+_FORMULA_FUNCS = {
+    "abs": abs, "sqrt": math.sqrt, "ln": math.log, "log": math.log10, "exp": math.exp,
+    "sin": math.sin, "cos": math.cos, "tan": math.tan, "asin": math.asin, "acos": math.acos, "atan": math.atan,
+    "ceil": math.ceil, "floor": math.floor, "round": round, "min": min, "max": max,
+    "fact": lambda n: math.factorial(int(n)),
+}
+_FORMULA_CONSTS = {"pi": math.pi, "e": math.e}
+_FORMULA_NODES = (ast.Expression, ast.BinOp, ast.UnaryOp, ast.Call, ast.Name, ast.Load, ast.Constant,
+                  ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Pow, ast.Mod, ast.USub, ast.UAdd)
+_FORMULA_ASSIGNMENT_RE = re.compile(r'^\s*([A-Za-z_]\w*)\s*=(?!=)\s*(.+)$')
+_VARIABLE_TOKEN_RE = re.compile(r'\[([A-Za-z_]\w*)\]')
+
+
+def formula_strings(formulas):
+    """Normalize a formulas list to plain strings (Canvas drops formulas sent as {"formula": ...} objects)."""
+    out = []
+    for f in formulas or []:
+        if isinstance(f, dict):
+            f = f.get("formula", "")
+        if isinstance(f, str) and f.strip():
+            out.append(f.strip())
+    return out
+
+
+def _eval_formula_expr(expr, env):
+    """Evaluate one formula expression with a whitelist of nodes, functions, and names (no arbitrary Python)."""
+    tree = ast.parse(expr.replace("^", "**"), mode="eval")
+    for node in ast.walk(tree):
+        if not isinstance(node, _FORMULA_NODES):
+            raise ValueError(f"unsupported syntax ({type(node).__name__})")
+        if isinstance(node, ast.Constant) and not isinstance(node.value, (int, float)):
+            raise ValueError("unsupported constant")
+        if isinstance(node, ast.Call) and not (isinstance(node.func, ast.Name) and node.func.id in _FORMULA_FUNCS):
+            raise ValueError("unsupported function")
+        if isinstance(node, ast.Name) and node.id not in env and node.id not in _FORMULA_FUNCS:
+            raise ValueError(f"unknown name '{node.id}'")
+    return eval(compile(tree, "<formula>", "eval"), {"__builtins__": {}}, {**_FORMULA_FUNCS, **env})  # noqa: S307
+
+
+def evaluate_formulas(formulas, values):
+    """Evaluate Canvas formula lines in order (``name = expr`` lines define intermediates); return the last value."""
+    env = {**_FORMULA_CONSTS, **{k: float(v) for k, v in values.items()}}
+    result = None
+    for line in formula_strings(formulas):
+        m = _FORMULA_ASSIGNMENT_RE.match(line)
+        if m:
+            env[m.group(1)] = result = _eval_formula_expr(m.group(2), env)
+        else:
+            result = _eval_formula_expr(line, env)
+    if result is None:
+        raise ValueError("no formula")
+    result = float(result)
+    if not math.isfinite(result):
+        raise ValueError("result is not a finite number")
+    return result
+
+
+def _variable_range_ok(v):
+    """True if a variable spec has a usable name and a min <= max range (with an integer inside it when scale is 0)."""
+    try:
+        lo, hi, scale = float(v.get("min")), float(v.get("max")), int(v.get("scale") or 0)
+    except (TypeError, ValueError):
+        return False
+    name = str(v.get("name") or "")
+    if not re.fullmatch(r'[A-Za-z_]\w*', name) or lo > hi:
+        return False
+    return scale > 0 or math.ceil(lo) <= math.floor(hi)
+
+
+def _sample_variable(v, rng):
+    """Draw one value for a variable spec, honoring its decimal places (scale)."""
+    lo, hi, scale = float(v["min"]), float(v["max"]), int(v.get("scale") or 0)
+    if scale == 0:
+        return rng.randint(math.ceil(lo), math.floor(hi))
+    return round(rng.uniform(lo, hi), scale)
+
+
+def fill_question_text(text, values):
+    """Substitute [name] tokens in question text with sampled values (what a student would see)."""
+    def fmt(m):
+        val = values.get(m.group(1))
+        if val is None:
+            return m.group(0)
+        return str(int(val)) if float(val).is_integer() else str(val)
+    return _VARIABLE_TOKEN_RE.sub(fmt, text or "")
+
+
+def _calculated_spec_warnings(question, variables, names, formulas):
+    """Static checks on a calculated question's variables/formulas/text (before any sampling)."""
+    warnings = []
+    tokens = set(_VARIABLE_TOKEN_RE.findall(question.get("question_text") or ""))
+    if not variables:
+        warnings.append("No variables are defined.")
+    if not formulas:
+        warnings.append("No formula is defined.")
+    missing = sorted(tokens - set(names))
+    if missing:
+        warnings.append(f"Question text uses {', '.join('[' + t + ']' for t in missing)} but no such variable is defined.")
+    unused = sorted(set(names) - tokens)
+    if unused:
+        warnings.append(f"Variable(s) {', '.join(unused)} never appear as [name] in the question text, so students won't see their values.")
+    bad = [n or "?" for v, n in zip(variables, names) if not _variable_range_ok(v)]
+    if bad:
+        warnings.append(f"Variable(s) {', '.join(bad)} have an invalid name or range.")
+    clash = [n for n in names if n in _FORMULA_FUNCS or n in _FORMULA_CONSTS]
+    if clash:
+        warnings.append(f"Variable name(s) {', '.join(clash)} collide with a function/constant name.")
+    if int(question.get("formula_decimal_places") or 0) > 0 and not question.get("answer_tolerance"):
+        warnings.append("The answer has decimal places but no answer_tolerance, so students may be marked wrong for rounding differently.")
+    return warnings, bool(bad)
+
+
+def _answer_set_warnings(sets, n_sets, errors, last_error):
+    """Warnings about the sampled answer sets (evaluation failures, suspiciously constant or huge answers)."""
+    warnings = []
+    if errors:
+        warnings.append(f"{errors} sampled value combination(s) could not be evaluated ({last_error}).")
+    if not sets:
+        warnings.append("No answer sets could be computed, so Canvas would have no correct answers. Regenerate or fix the formula.")
+        return warnings
+    answers = [s["answer_text"] for s in sets]
+    top, count = Counter(answers).most_common(1)[0]
+    if len(answers) >= 5 and count / len(answers) >= 0.7:
+        warnings.append(f"{count} of {len(answers)} sampled answers are identical ({top}); the formula may not use the variables as intended.")
+    if any(abs(a) > 1e7 for a in answers):
+        warnings.append("Some answers exceed 10,000,000; check that the variable ranges are sensible.")
+    if len(sets) < min(n_sets, 2):
+        warnings.append("Fewer than 2 distinct variable combinations exist; widen the ranges.")
+    return warnings
+
+
+def build_calculated_answer_sets(question, n_sets=10, seed=None):
+    """Compute Canvas answer sets for a calculated question and return ``(answer_sets, warnings)``.
+
+    Each answer set is ``{"variables": [{"name", "value"}], "answer_text": <correct answer>, "weight": 100}``,
+    the shape Canvas accepts when the question is sent as JSON. Distinct variable combinations are sampled
+    within each variable's [min, max] range; the last formula line gives the answer.
+    """
+    rng = random.Random(seed)
+    variables = [v for v in (question.get("variables") or []) if isinstance(v, dict)]
+    names = [str(v.get("name") or "") for v in variables]
+    formulas = formula_strings(question.get("formulas"))
+    warnings, bad_range = _calculated_spec_warnings(question, variables, names, formulas)
+    if not variables or not formulas or bad_range:
+        return [], warnings + ["No answer sets could be computed, so Canvas would have no correct answers. Regenerate or fix the formula."]
+
+    dp = int(question.get("formula_decimal_places") or 0)
+    sets, seen, errors, last_error = [], set(), 0, ""
+    for _ in range(n_sets * 20):
+        if len(sets) >= n_sets:
+            break
+        values = {n: _sample_variable(v, rng) for v, n in zip(variables, names)}
+        key = tuple(sorted(values.items()))
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            answer = evaluate_formulas(formulas, values)
+        except (ValueError, ArithmeticError, TypeError, SyntaxError) as e:
+            errors += 1
+            last_error = str(e) or type(e).__name__
+            continue
+        sets.append({
+            "variables": [{"name": n, "value": values[n]} for n in names],
+            "answer_text": round(answer, dp) if dp else round(answer),
+            "weight": 100,
+        })
+    return sets, warnings + _answer_set_warnings(sets, n_sets, errors, last_error)
+
+
+def _answer_weight(a):
+    """Numeric weight of an LLM answer dict (accepts answer_weight or weight, numeric or string)."""
+    try:
+        return float(a.get("answer_weight", a.get("weight", 0)) or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _choice_warnings(qtype, answers):
+    """Structural checks for multiple_choice / multiple_answers / true_false answers."""
+    n_correct = sum(_answer_weight(a) >= 100 for a in answers)
+    if qtype == "multiple_choice_question" and n_correct != 1:
+        return [f"Multiple choice should have exactly 1 correct answer (has {n_correct})."]
+    if qtype == "multiple_answers_question" and (n_correct < 2 or n_correct == len(answers)):
+        return [f"Multiple answers should have 2+ correct and at least 1 incorrect option (has {n_correct} of {len(answers)} correct)."]
+    if qtype == "true_false_question" and (len(answers) != 2 or n_correct != 1):
+        return ["True/false should have exactly 2 answers with exactly 1 correct."]
+    return []
+
+
+def _blank_warnings(qtype, question, answers):
+    """Check that [blank] tokens in the text match the answers' blank_ids (and dropdowns have one correct each)."""
+    warnings = []
+    tokens = set(_VARIABLE_TOKEN_RE.findall(question.get("question_text") or ""))
+    blank_ids = {str(a.get("blank_id")) for a in answers if a.get("blank_id")}
+    if tokens - blank_ids:
+        warnings.append(f"Question text has {', '.join(sorted(tokens - blank_ids))} with no matching answers.")
+    if blank_ids - tokens:
+        warnings.append(f"Answers reference blank(s) {', '.join(sorted(blank_ids - tokens))} that don't appear as [name] in the text.")
+    if qtype == "multiple_dropdowns_question":
+        for b in sorted(blank_ids & tokens):
+            n = sum(_answer_weight(a) >= 100 for a in answers if str(a.get("blank_id")) == b)
+            if n != 1:
+                warnings.append(f"Dropdown [{b}] should have exactly 1 correct option (has {n}).")
+    return warnings
+
+
+def validate_quiz_question(question):
+    """Return human-readable warnings about structural problems in an LLM-drafted (non-calculated) question."""
+    qtype = question.get("question_type")
+    answers = [a for a in (question.get("answers") or []) if isinstance(a, dict)]
+    if qtype in ("multiple_choice_question", "multiple_answers_question", "true_false_question"):
+        return _choice_warnings(qtype, answers)
+    if qtype in ("fill_in_multiple_blanks_question", "multiple_dropdowns_question"):
+        return _blank_warnings(qtype, question, answers)
+    if qtype == "matching_question":
+        pairs = [a for a in answers if str(a.get("answer_match_left", "")).strip() and str(a.get("answer_match_right", "")).strip()]
+        return [] if len(pairs) >= 2 else ["Matching should have at least 2 complete left/right pairs."]
+    return []
 
 
 def generate_quiz_question(user_seed, client=None, model=None, prior_drafts=None):

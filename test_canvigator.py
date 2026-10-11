@@ -3082,6 +3082,209 @@ class TestQuizQuestionHelpers:
         assert "Rejected draft 1" in prompt
 
 
+class TestCalculatedQuestionHelpers:
+    """Tests for the local Formula-question evaluator and answer-set builder in canvigator_llm."""
+
+    def _question(self, **overrides):
+        q = {
+            "question_type": "calculated_question",
+            "question_text": "A hash table has n=[n] buckets. How many keys guarantee at least k=[k] in one bucket?",
+            "variables": [{"name": "n", "min": 2, "max": 10, "scale": 0}, {"name": "k", "min": 3, "max": 5, "scale": 0}],
+            "formulas": [{"formula": "n*(k-1)+1"}],
+            "formula_decimal_places": 0,
+        }
+        q.update(overrides)
+        return q
+
+    def test_formula_strings_normalizes_dicts_and_strings(self):
+        """Dict formulas become plain strings (Canvas drops the dict form); blanks are dropped."""
+        from canvigator_llm import formula_strings
+        assert formula_strings([{"formula": "x*2"}, " y+1 ", {"formula": ""}, None]) == ["x*2", "y+1"]
+        assert formula_strings(None) == []
+
+    def test_evaluate_formulas_supports_canvas_syntax(self):
+        """Caret power, Canvas functions such as fact(), and multi-line intermediates evaluate correctly."""
+        from canvigator_llm import evaluate_formulas
+        assert evaluate_formulas(["x^2 + 1"], {"x": 3}) == 10
+        assert evaluate_formulas(["fact(n) / fact(n-5)"], {"n": 9}) == 15120
+        assert evaluate_formulas(["nt = a + b", "100 - nt"], {"a": 10, "b": 5}) == 85
+        assert evaluate_formulas([{"formula": "ceil(k / n)"}], {"k": 4, "n": 4}) == 1
+
+    @pytest.mark.parametrize("expr", ["__import__('os').system('true')", "(1).__class__", "'a'*3", "foo(1)", "y + 1"])
+    def test_evaluate_formulas_rejects_unsafe_or_unknown(self, expr):
+        """Attribute access, unknown functions/names, and string constants are rejected, never executed."""
+        from canvigator_llm import evaluate_formulas
+        with pytest.raises(ValueError):
+            evaluate_formulas([expr], {"x": 1})
+
+    def test_build_answer_sets_shape_and_values(self):
+        """Answer sets are distinct, in Canvas's JSON shape, and carry the formula's value as answer_text."""
+        from canvigator_llm import build_calculated_answer_sets
+        sets, warnings = build_calculated_answer_sets(self._question(), n_sets=8, seed=0)
+        assert warnings == []
+        assert len(sets) == 8
+        combos = {tuple(v["value"] for v in s["variables"]) for s in sets}
+        assert len(combos) == 8
+        for s in sets:
+            vals = {v["name"]: v["value"] for v in s["variables"]}
+            assert s["weight"] == 100
+            assert s["answer_text"] == vals["n"] * (vals["k"] - 1) + 1
+
+    def test_build_answer_sets_flags_constant_answers(self):
+        """A formula whose answers barely vary (the Quiz 72 ceil(k/n) bug) is flagged."""
+        from canvigator_llm import build_calculated_answer_sets
+        q = self._question(variables=[{"name": "n", "min": 5, "max": 10, "scale": 0}, {"name": "k", "min": 3, "max": 5, "scale": 0}],
+                           formulas=[{"formula": "ceil(k / n)"}])
+        sets, warnings = build_calculated_answer_sets(q, seed=0)
+        assert sets
+        assert any("identical" in w for w in warnings)
+
+    def test_build_answer_sets_flags_text_variable_mismatches_and_tolerance(self):
+        """Undefined [tokens], variables missing from the text, and decimals without tolerance are all reported."""
+        from canvigator_llm import build_calculated_answer_sets
+        q = self._question(question_text="Compute [n] with [base].", formula_decimal_places=2)
+        _, warnings = build_calculated_answer_sets(q, seed=0)
+        joined = " ".join(warnings)
+        assert "[base]" in joined
+        assert "k never appear" in joined
+        assert "answer_tolerance" in joined
+
+    def test_build_answer_sets_reports_evaluation_errors(self):
+        """Ranges that hit invalid math (log of 0) are counted; if nothing evaluates, no sets are returned."""
+        from canvigator_llm import build_calculated_answer_sets
+        q = self._question(question_text="[x]", variables=[{"name": "x", "min": 0, "max": 0, "scale": 0}], formulas=["log(x)"])
+        sets, warnings = build_calculated_answer_sets(q, seed=0)
+        assert sets == []
+        assert any("could not be evaluated" in w for w in warnings)
+        assert any("No answer sets" in w for w in warnings)
+
+    def test_build_answer_sets_rejects_bad_ranges(self):
+        """min > max (or no integer in range for scale 0) yields no sets and a range warning."""
+        from canvigator_llm import build_calculated_answer_sets
+        q = self._question(variables=[{"name": "n", "min": 9, "max": 2, "scale": 0}, {"name": "k", "min": 3, "max": 5, "scale": 0}])
+        sets, warnings = build_calculated_answer_sets(q, seed=0)
+        assert sets == []
+        assert any("invalid name or range" in w for w in warnings)
+
+    def test_fill_question_text(self):
+        """[name] tokens are replaced by values; whole numbers print without a trailing .0; unknown tokens stay."""
+        from canvigator_llm import fill_question_text
+        assert fill_question_text("n=[n], x=[x], [other]", {"n": 4.0, "x": 2.5}) == "n=4, x=2.5, [other]"
+
+    def test_validate_quiz_question_structural_checks(self):
+        """Malformed choice/dropdown/matching drafts produce warnings; a well-formed one does not."""
+        from canvigator_llm import validate_quiz_question
+        mc_ok = {"question_type": "multiple_choice_question", "answers": [
+            {"answer_text": "a", "answer_weight": 100}, {"answer_text": "b", "answer_weight": 0}]}
+        mc_two = {"question_type": "multiple_choice_question", "answers": [
+            {"answer_text": "a", "answer_weight": 100}, {"answer_text": "b", "answer_weight": "100"}]}
+        ma_one = {"question_type": "multiple_answers_question", "answers": [
+            {"answer_text": "a", "answer_weight": 100}, {"answer_text": "b", "answer_weight": 0}]}
+        dd = {"question_type": "multiple_dropdowns_question", "question_text": "Pick [d1] and [d2].", "answers": [
+            {"blank_id": "d1", "answer_text": "x", "answer_weight": 100}, {"blank_id": "d3", "answer_text": "y", "answer_weight": 100}]}
+        match = {"question_type": "matching_question", "answers": [{"answer_match_left": "A", "answer_match_right": "1"}]}
+        assert validate_quiz_question(mc_ok) == []
+        assert validate_quiz_question(mc_two)
+        assert validate_quiz_question(ma_one)
+        dd_w = " ".join(validate_quiz_question(dd))
+        assert "d2" in dd_w and "d3" in dd_w
+        assert validate_quiz_question(match)
+
+
+class TestCreateQuizFlow:
+    """Tests for create-quiz: course confirmation, lazy quiz creation, settings, JSON Formula questions."""
+
+    def _course(self):
+        from canvigator_course import CanvigatorCourse
+        course = CanvigatorCourse.__new__(CanvigatorCourse)
+        course.canvas_course = MagicMock()
+        course.canvas_course.name = "Sandbox Course 1"
+        quiz = MagicMock(title="T", id=42, course_id=7)
+        course.canvas_course.create_quiz.return_value = quiz
+        return course, quiz
+
+    def test_declining_course_confirmation_creates_nothing(self):
+        """Answering anything but 'y' to the course confirmation exits before any Canvas call."""
+        course, _ = self._course()
+        with patch("builtins.input", side_effect=["n"]):
+            course.createQuiz()
+        course.canvas_course.create_quiz.assert_not_called()
+
+    def test_no_questions_means_no_quiz(self):
+        """Ending before any question is accepted leaves no empty quiz behind."""
+        course, _ = self._course()
+        with patch("builtins.input", side_effect=["y", "My quiz", "", "", "e"]):
+            course.createQuiz()
+        course.canvas_course.create_quiz.assert_not_called()
+
+    def test_placeholder_creates_quiz_with_settings_and_resaves(self):
+        """The quiz is created on the first accepted question with the chosen settings, then re-saved once."""
+        course, quiz = self._course()
+        with patch("builtins.input", side_effect=["y", "My quiz", "0", "-1", "p", "Counting question", "e"]):
+            course.createQuiz()
+        settings = course.canvas_course.create_quiz.call_args[0][0]
+        assert settings["title"] == "My quiz"
+        assert "time_limit" not in settings
+        assert settings["allowed_attempts"] == -1
+        assert settings["published"] is False
+        quiz.create_question.assert_called_once()
+        quiz.edit.assert_called_once_with(quiz={"title": "My quiz"})
+
+    def test_quiz_settings_defaults_and_reprompt(self):
+        """Enter keeps 30 min / 1 attempt; invalid input re-prompts; 0 attempts is not allowed."""
+        from canvigator_course import _promptQuizSettings
+        with patch("builtins.input", side_effect=["", ""]):
+            s = _promptQuizSettings("Q")
+        assert s["time_limit"] == 30 and s["allowed_attempts"] == 1
+        with patch("builtins.input", side_effect=["abc", "45", "0", "3"]):
+            s = _promptQuizSettings("Q")
+        assert s["time_limit"] == 45 and s["allowed_attempts"] == 3
+
+    def test_add_question_routes_calculated_through_json(self):
+        """Calculated questions are POSTed as JSON (private keys stripped); others use create_question."""
+        from canvigator_course import _addQuestionToQuiz
+        quiz = MagicMock(id=42, course_id=7)
+        _addQuestionToQuiz(quiz, {"question_type": "multiple_choice_question", "question_name": "MC", "_note": "x"})
+        assert "_note" not in quiz.create_question.call_args.kwargs["question"]
+        calc = {"question_type": "calculated_question", "formulas": ["n+1"], "answers": [{"answer_text": 2}], "_note": "x"}
+        _addQuestionToQuiz(quiz, calc)
+        args, kwargs = quiz._requester.request.call_args
+        assert args == ("POST", "courses/7/quizzes/42/questions")
+        assert kwargs["json"] is True
+        assert "_note" not in kwargs["question"]
+        assert kwargs["question"]["formulas"] == ["n+1"]
+
+    def _llm_stub(self, draft):
+        import canvigator_llm
+        cl = MagicMock(wraps=canvigator_llm)
+        cl.generate_quiz_question = MagicMock(return_value=draft)
+        return cl
+
+    def test_review_finalizes_calculated_question(self, capsys):
+        """Accepting a Formula draft shows a worked example and attaches string formulas plus answer sets."""
+        from canvigator_course import _reviewGeneratedQuestion
+        draft = {"question_type": "calculated_question", "question_name": "Grow", "question_text": "What is [x] squared?",
+                 "variables": [{"name": "x", "min": 2, "max": 9, "scale": 0}], "formulas": [{"formula": "x^2"}],
+                 "formula_decimal_places": 0, "answers": []}
+        with patch("builtins.input", side_effect=["y"]):
+            q = _reviewGeneratedQuestion(self._llm_stub(draft), None, "m", "seed", 3)
+        out = capsys.readouterr().out
+        assert "WORKED EXAMPLE" in out
+        assert q["formulas"] == ["x^2"]
+        assert q["answers"] and all(a["answer_text"] == {v["name"]: v["value"] for v in a["variables"]}["x"] ** 2 for a in q["answers"])
+        assert q["points_possible"] == 1 and q["position"] == 3
+
+    def test_review_refuses_uncomputable_calculated_question(self, capsys):
+        """A Formula draft with no computable answer sets can't be accepted; the instructor must regenerate or skip."""
+        from canvigator_course import _reviewGeneratedQuestion
+        draft = {"question_type": "calculated_question", "question_name": "Bad", "question_text": "[x]",
+                 "variables": [{"name": "x", "min": 0, "max": 0, "scale": 0}], "formulas": ["log(x)"], "answers": []}
+        with patch("builtins.input", side_effect=["y", "s"]):
+            q = _reviewGeneratedQuestion(self._llm_stub(draft), None, "m", "seed", 1)
+        assert q is None
+        assert "no computable answer sets" in capsys.readouterr().out
+
+
 # ---------------------------------------------------------------------------
 # canvigator_digest tests
 # ---------------------------------------------------------------------------
