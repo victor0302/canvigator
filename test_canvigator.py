@@ -3117,6 +3117,13 @@ class TestCalculatedQuestionHelpers:
         with pytest.raises(ValueError):
             evaluate_formulas([expr], {"x": 1})
 
+    @pytest.mark.parametrize("expr", ["9^9^9", "10^400", "2^5000", "fact(100000)"])
+    def test_evaluate_formulas_rejects_huge_results_quickly(self, expr):
+        """Runaway powers and factorials raise instead of hanging the preview."""
+        from canvigator_llm import evaluate_formulas
+        with pytest.raises(ValueError):
+            evaluate_formulas([expr], {})
+
     def test_build_answer_sets_shape_and_values(self):
         """Answer sets are distinct, in Canvas's JSON shape, and carry the formula's value as answer_text."""
         from canvigator_llm import build_calculated_answer_sets

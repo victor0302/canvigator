@@ -1887,11 +1887,40 @@ def _parse_quiz_question(content):
 # {"formula": "..."} is silently dropped. These helpers evaluate the formula locally (a safe subset of
 # Canvas's formula syntax) so create-quiz can preview a worked example and send ready-made answer sets.
 
+_FORMULA_MAX_DIGITS = 300  # far beyond any quiz answer; stops formulas like 9^9^9 from hanging the preview
+
+
+def _formula_fact(n):
+    """Factorial for formulas, capped so a bad formula can't hang the preview."""
+    n = int(n)
+    if not 0 <= n <= 170:
+        raise ValueError("fact() argument out of range (0-170)")
+    return math.factorial(n)
+
+
+def _formula_pow(base, exponent):
+    """``base ** exponent`` for formulas, refusing results too large for any quiz answer."""
+    if abs(exponent) > 1000 or (abs(base) > 1 and exponent * math.log10(abs(base)) > _FORMULA_MAX_DIGITS):
+        raise ValueError("power too large")
+    return base ** exponent
+
+
+class _PowToCall(ast.NodeTransformer):
+    """Rewrite ``a ** b`` as a call to the capped ``_formula_pow``."""
+
+    def visit_BinOp(self, node):
+        """Replace power operators after rewriting any nested ones."""
+        self.generic_visit(node)
+        if isinstance(node.op, ast.Pow):
+            return ast.copy_location(ast.Call(func=ast.Name(id="__pow", ctx=ast.Load()), args=[node.left, node.right], keywords=[]), node)
+        return node
+
+
 _FORMULA_FUNCS = {
     "abs": abs, "sqrt": math.sqrt, "ln": math.log, "log": math.log10, "exp": math.exp,
     "sin": math.sin, "cos": math.cos, "tan": math.tan, "asin": math.asin, "acos": math.acos, "atan": math.atan,
     "ceil": math.ceil, "floor": math.floor, "round": round, "min": min, "max": max,
-    "fact": lambda n: math.factorial(int(n)),
+    "fact": _formula_fact,
 }
 _FORMULA_CONSTS = {"pi": math.pi, "e": math.e}
 _FORMULA_NODES = (ast.Expression, ast.BinOp, ast.UnaryOp, ast.Call, ast.Name, ast.Load, ast.Constant,
@@ -1923,7 +1952,8 @@ def _eval_formula_expr(expr, env):
             raise ValueError("unsupported function")
         if isinstance(node, ast.Name) and node.id not in env and node.id not in _FORMULA_FUNCS:
             raise ValueError(f"unknown name '{node.id}'")
-    return eval(compile(tree, "<formula>", "eval"), {"__builtins__": {}}, {**_FORMULA_FUNCS, **env})  # noqa: S307
+    tree = ast.fix_missing_locations(_PowToCall().visit(tree))
+    return eval(compile(tree, "<formula>", "eval"), {"__builtins__": {}}, {**_FORMULA_FUNCS, **env, "__pow": _formula_pow})  # noqa: S307
 
 
 def evaluate_formulas(formulas, values):
