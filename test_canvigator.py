@@ -3166,7 +3166,7 @@ class TestCalculatedQuestionHelpers:
         assert any("No answer sets" in w for w in warnings)
 
     def test_build_answer_sets_rejects_bad_ranges(self):
-        """min > max (or no integer in range for scale 0) yields no sets and a range warning."""
+        """A min above max (or no integer in range for scale 0) yields no sets and a range warning."""
         from canvigator_llm import build_calculated_answer_sets
         q = self._question(variables=[{"name": "n", "min": 9, "max": 2, "scale": 0}, {"name": "k", "min": 3, "max": 5, "scale": 0}])
         sets, warnings = build_calculated_answer_sets(q, seed=0)
