@@ -67,12 +67,12 @@ def _chat_with_retry(client, **chat_kwargs):
 DEFAULT_MODEL = os.environ.get("OLLAMA_MODEL", "gemma4:31b")
 DEFAULT_AUDIO_MODEL = os.environ.get("OLLAMA_AUDIO_MODEL", "gemma4:e4b")
 # Used for instructor-side text tasks that never see student data (tagging quiz
-# questions, generating open-ended follow-up questions). A larger cloud model
-# is the better fit here since privacy constraints don't apply.
-DEFAULT_TEXT_MODEL = os.environ.get("OLLAMA_TEXT_MODEL", "gemini-3-flash-preview")
+# questions, generating open-ended follow-up questions). Runs on Ollama's cloud;
+# gemma4:31b is included in the free plan (gemini-3-flash-preview is no longer
+# listed at https://ollama.com/api/tags).
+DEFAULT_TEXT_MODEL = os.environ.get("OLLAMA_TEXT_MODEL", "gemma4:31b")
 
-# Cloud host for Ollama's hosted models. Used when OLLAMA_API_KEY is set, since
-# models like gemini-3-flash-preview are not available on a local Ollama server.
+# Cloud host for Ollama's hosted models (requires OLLAMA_API_KEY).
 OLLAMA_CLOUD_HOST = "https://ollama.com"
 
 

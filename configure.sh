@@ -20,7 +20,7 @@ read LMSURL
 echo "Enter or paste your Canvas LMS access token here (be careful not to share this with anyone else):"
 read TOKEN
 
-echo "Enter or paste your Ollama API key (used for cloud-hosted text models like gemini-3-flash-preview; leave blank if you only plan to use local Ollama models):"
+echo "Enter or paste your Ollama API key (used for cloud-hosted text models like gemma4:31b; leave blank if you only plan to use local Ollama models):"
 read OLLAMAKEY
 
 echo "#!/bin/bash" > "$SETENV"

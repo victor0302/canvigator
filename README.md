@@ -48,7 +48,7 @@ python canvigator.py --reply-window-days N <task>  # set the days-after-send win
 python canvigator.py --months N delete-old-conversations  # cutoff age in months for delete-old-conversations (default: 6)
 python canvigator.py --auto-grade get-media-recordings  # skip per-student review and auto-grade every submission at full credit
 python canvigator.py --days N prep-class-digest          # synthesize a 1-page brief on cohort gaps from the last N days (default 7)
-python canvigator.py --cloud-questions prep-class-digest # opt the discussion-question step into cloud Gemini 3 with a redacted prompt (default: local Gemma 4)
+python canvigator.py --cloud-questions prep-class-digest # opt the discussion-question step into the cloud text model with a redacted prompt (default: local Gemma 4)
 ```
 
 Every flag has a single-dash short alias: `-d` (`--dry-run`), `-t` (`--tag`),
