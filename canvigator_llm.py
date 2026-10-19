@@ -11,6 +11,7 @@ import subprocess
 import tempfile
 import time
 from collections import Counter
+from decimal import ROUND_HALF_UP, Context, Decimal
 from pathlib import Path
 
 from canvigator_utils import selectFromList
@@ -1898,6 +1899,19 @@ def _formula_fact(n):
     return math.factorial(n)
 
 
+def _round_half_up(x, places=0):
+    """Round halves away from zero, as a student would (Python's round() sends 2.5 to 2 and 2.675 to 2.67).
+
+    ``repr(x)`` is the shortest decimal that maps back to the float, so 2.675 rounds as written rather
+    than as its binary value 2.67499.... Beyond 15 places a float has nothing left to round.
+    """
+    places = int(places)
+    if places > 15 or not math.isfinite(x):
+        return x
+    quantum = Decimal(1).scaleb(-places)
+    return float(Decimal(repr(x)).quantize(quantum, rounding=ROUND_HALF_UP, context=Context(prec=400)))
+
+
 def _formula_pow(base, exponent):
     """``base ** exponent`` for formulas, refusing results too large for any quiz answer."""
     if abs(exponent) > 1000 or (abs(base) > 1 and exponent * math.log10(abs(base)) > _FORMULA_MAX_DIGITS):
@@ -1919,7 +1933,7 @@ class _PowToCall(ast.NodeTransformer):
 _FORMULA_FUNCS = {
     "abs": abs, "sqrt": math.sqrt, "ln": math.log, "log": math.log10, "exp": math.exp,
     "sin": math.sin, "cos": math.cos, "tan": math.tan, "asin": math.asin, "acos": math.acos, "atan": math.atan,
-    "ceil": math.ceil, "floor": math.floor, "round": round, "min": min, "max": max,
+    "ceil": math.ceil, "floor": math.floor, "round": _round_half_up, "min": min, "max": max,
     "fact": _formula_fact,
 }
 _FORMULA_CONSTS = {"pi": math.pi, "e": math.e}
@@ -2081,7 +2095,7 @@ def build_calculated_answer_sets(question, n_sets=10, seed=None):
             continue
         sets.append({
             "variables": [{"name": n, "value": values[n]} for n in names],
-            "answer_text": round(answer, dp) if dp else round(answer),
+            "answer_text": _round_half_up(answer, dp) if dp else int(_round_half_up(answer)),
             "weight": 100,
         })
     return sets, warnings + _answer_set_warnings(sets, n_sets, errors, last_error)

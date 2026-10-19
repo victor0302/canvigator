@@ -3173,6 +3173,25 @@ class TestCalculatedQuestionHelpers:
         assert sets == []
         assert any("invalid name or range" in w for w in warnings)
 
+    def test_build_answer_sets_rounds_halves_up(self):
+        """Answers ending in .5 round up like a student would (Python's round() sends 2.5 to 2)."""
+        from canvigator_llm import build_calculated_answer_sets
+        q = self._question(question_text="Half of [n]?", variables=[{"name": "n", "min": 1, "max": 9, "scale": 0}], formulas=["n/2"])
+        sets, _ = build_calculated_answer_sets(q, n_sets=9, seed=0)
+        got = {s["variables"][0]["value"]: s["answer_text"] for s in sets}
+        assert got == {n: (n + 1) // 2 for n in range(1, 10)}
+        q = self._question(question_text="[n]", variables=[{"name": "n", "min": 1, "max": 1, "scale": 0}],
+                           formulas=["n * 2.675"], formula_decimal_places=2, answer_tolerance=0.01)
+        sets, _ = build_calculated_answer_sets(q, seed=0)
+        assert sets[0]["answer_text"] == 2.68
+
+    @pytest.mark.parametrize("expr, expected", [("round(2.5)", 3), ("round(0.5)", 1), ("round(-2.5)", -3),
+                                                ("round(2.675, 2)", 2.68), ("round(1250, -2)", 1300)])
+    def test_evaluate_formulas_round_halves_away_from_zero(self, expr, expected):
+        """The formula round() function rounds halves away from zero, not to the nearest even number."""
+        from canvigator_llm import evaluate_formulas
+        assert evaluate_formulas([expr], {}) == expected
+
     def test_fill_question_text(self):
         """[name] tokens are replaced by values; whole numbers print without a trailing .0; unknown tokens stay."""
         from canvigator_llm import fill_question_text
