@@ -165,9 +165,10 @@ class CanvigatorCourse:
         """Create a new quiz on Canvas, with each question chosen as a placeholder or LLM-generated draft.
 
         The course name is confirmed first (adjacent menu entries are easy to mistype), quiz settings are
-        prompted with the previous values as defaults, and the Canvas quiz is only created once the first
-        question is accepted, so ending early leaves no empty quiz behind. After the last question the quiz
-        is saved once so Canvas recomputes its point total and question count.
+        prompted (Enter keeps 30 minutes / 1 attempt), and the Canvas quiz is only created once the first
+        question is accepted, so ending early leaves no empty quiz behind. Once the quiz exists it is saved
+        again at the end, even if the session stops with an error, so Canvas recomputes its point total and
+        question count.
         """
         course_name = getattr(self.canvas_course, 'name', '(unknown course)')
         if input(f"Create a quiz in '{course_name}'? [y/N]: ").strip().lower() != 'y':
@@ -183,41 +184,44 @@ class CanvigatorCourse:
         position = 1
         print("\nAdd questions (choose [e] or press Enter at the prompt to finish):")
         llm = None  # (canvigator_llm module, client, model) once initialized
-        while True:
-            choice = input(f"  Q{position} — [p]laceholder, [g]enerate w/ LLM, [e]nd quiz: ").strip().lower()
-            if not choice or choice == 'e':
-                break
-            if choice not in ('p', 'g'):
-                print("    Please enter 'p', 'g', or 'e' (or Enter to end).")
-                continue
-
-            if choice == 'p':
-                question_dict = _promptPlaceholderQuestion(position)
-            else:
-                seed = input(f"    Q{position} prompt for LLM: ").strip()
-                if not seed:
+        try:
+            while True:
+                choice = input(f"  Q{position} — [p]laceholder, [g]enerate w/ LLM, [e]nd quiz: ").strip().lower()
+                if not choice or choice == 'e':
+                    break
+                if choice not in ('p', 'g'):
+                    print("    Please enter 'p', 'g', or 'e' (or Enter to end).")
                     continue
-                llm = llm or _initQuizLlm()
-                if llm is None:
-                    continue
-                question_dict = _reviewGeneratedQuestion(*llm, seed, position)
-            if question_dict is None:
-                continue
 
-            if quiz is None:
-                quiz = self.canvas_course.create_quiz(settings)
-                print(f"    Created quiz: '{quiz.title}' (id={quiz.id}, unpublished)")
-                logger.info(f"Created quiz: '{quiz.title}' (id={quiz.id})")
-            _addQuestionToQuiz(quiz, question_dict)
-            print(f"    Added Q{position} ({question_dict['question_type']}): {question_dict['question_name']}")
-            logger.info(f"  Added question {position} ({question_dict['question_type']}): {question_dict['question_name']}")
-            position += 1
+                if choice == 'p':
+                    question_dict = _promptPlaceholderQuestion(position)
+                else:
+                    seed = input(f"    Q{position} prompt for LLM: ").strip()
+                    if not seed:
+                        continue
+                    llm = llm or _initQuizLlm()
+                    if llm is None:
+                        continue
+                    question_dict = _reviewGeneratedQuestion(*llm, seed, position)
+                if question_dict is None:
+                    continue
+
+                if quiz is None:
+                    quiz = self.canvas_course.create_quiz(settings)
+                    print(f"    Created quiz: '{quiz.title}' (id={quiz.id}, unpublished)")
+                    logger.info(f"Created quiz: '{quiz.title}' (id={quiz.id})")
+                _addQuestionToQuiz(quiz, question_dict)
+                print(f"    Added Q{position} ({question_dict['question_type']}): {question_dict['question_name']}")
+                logger.info(f"  Added question {position} ({question_dict['question_type']}): {question_dict['question_name']}")
+                position += 1
+        finally:
+            if quiz is not None:  # re-save (even after an error) so Canvas recomputes points_possible / question_count
+                quiz.edit(quiz={'title': title})
 
         n_questions = position - 1
         if quiz is None:
             print("\nNo questions were added, so no quiz was created.")
             return
-        quiz.edit(quiz={'title': title})  # re-save so Canvas recomputes points_possible / question_count
         print(f"\nQuiz '{title}' created with {n_questions} question{'s' if n_questions != 1 else ''}.")
         logger.info(f"Quiz '{title}' complete: {n_questions} questions")
 
@@ -1307,18 +1311,32 @@ def _renderQuestionPreview(question_dict, cl=None, answer_sets=None, warnings=No
 
 
 def _checkGeneratedQuestion(cl, question_dict):
-    """Return ``(answer_sets, warnings)``: computed answer sets for calculated questions, structural warnings otherwise."""
-    if question_dict.get('question_type') == 'calculated_question':
-        return cl.build_calculated_answer_sets(question_dict)
-    return [], cl.validate_quiz_question(question_dict)
+    """Return ``(answer_sets, warnings, refusal)`` for a draft; ``refusal`` says why it can't be accepted (None if it can).
+
+    Calculated questions get computed answer sets, others structural warnings. A malformed draft that makes
+    the checks themselves fail is logged and refused rather than ending the create-quiz session.
+    """
+    is_calculated = question_dict.get('question_type') == 'calculated_question'
+    try:
+        if is_calculated:
+            answer_sets, warnings = cl.build_calculated_answer_sets(question_dict)
+        else:
+            answer_sets, warnings = [], cl.validate_quiz_question(question_dict)
+    except Exception as e:
+        logger.exception("Checking a generated question draft failed")
+        return [], [f"This draft could not be checked ({type(e).__name__}: {e})."], "This draft could not be checked. Choose 'r' or 's'."
+    if is_calculated and not answer_sets:
+        return answer_sets, warnings, ("This Formula question has no computable answer sets, so Canvas would mark every "
+                                       "answer wrong. Choose 'r' or 's'.")
+    return answer_sets, warnings, None
 
 
-def _promptAcceptChoice(can_accept):
-    """Ask [y]/[r]/[s]; refuse 'y' when the draft can't be added (e.g. a Formula question with no answer sets)."""
+def _promptAcceptChoice(refusal=None):
+    """Ask [y]/[r]/[s]; when ``refusal`` is set, explain it and refuse 'y' (the draft can't be added)."""
     while True:
         choice = input("    Accept this question? [y]es / [r]egenerate / [s]kip: ").strip().lower()
-        if choice == 'y' and not can_accept:
-            print("    This Formula question has no computable answer sets, so Canvas would mark every answer wrong. Choose 'r' or 's'.")
+        if choice == 'y' and refusal:
+            print(f"    {refusal}")
             continue
         if choice in ('y', 'r', 's'):
             return choice
@@ -1347,22 +1365,20 @@ def _reviewGeneratedQuestion(cl, client, model, seed, position):
             print("    ERROR: generation failed or response was invalid. Skipping.")
             return None
 
-        is_calculated = question_dict.get('question_type') == 'calculated_question'
-        answer_sets, warnings = _checkGeneratedQuestion(cl, question_dict)
+        answer_sets, warnings, refusal = _checkGeneratedQuestion(cl, question_dict)
         print(f"\n    --- Q{position} preview ---")
         _renderQuestionPreview(question_dict, cl, answer_sets, warnings)
         print("    -------------------")
 
-        choice = _promptAcceptChoice(can_accept=bool(answer_sets) or not is_calculated)
+        choice = _promptAcceptChoice(refusal)
         if choice == 's':
             return None
         if choice == 'r':
             rejected.append(question_dict)
             continue
         # 'y' — finalize
-        if is_calculated:
-            question_dict['formulas'] = cl.formula_strings(question_dict.get('formulas'))
-            question_dict['answers'] = answer_sets
+        if question_dict.get('question_type') == 'calculated_question':
+            question_dict.update(cl.calculated_canvas_fields(question_dict), answers=answer_sets)
         if not question_dict.get('question_name'):
             question_dict['question_name'] = f"Question {position}"
         question_dict['points_possible'] = 1

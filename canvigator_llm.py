@@ -1945,6 +1945,8 @@ _VARIABLE_TOKEN_RE = re.compile(r'\[([A-Za-z_]\w*)\]')
 
 def formula_strings(formulas):
     """Normalize a formulas list to plain strings (Canvas drops formulas sent as {"formula": ...} objects)."""
+    if isinstance(formulas, (str, dict)):  # a lone formula; iterating a string would split it into characters
+        formulas = [formulas]
     out = []
     for f in formulas or []:
         if isinstance(f, dict):
@@ -1988,21 +1990,44 @@ def evaluate_formulas(formulas, values):
     return result
 
 
-def _variable_range_ok(v):
-    """True if a variable spec has a usable name and a min <= max range (with an integer inside it when scale is 0)."""
+def _as_int(value, default=0):
+    """Read an LLM-supplied whole number leniently (2, 2.0, "2" and "2.0" all give 2); None if it isn't one."""
+    if value is None or value == "":
+        return default
     try:
-        lo, hi, scale = float(v.get("min")), float(v.get("max")), int(v.get("scale") or 0)
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    return int(f) if f.is_integer() else None
+
+
+def _decimal_places(question):
+    """Return ``(places, warning)`` for formula_decimal_places; an unreadable or negative value means 0, with a warning."""
+    raw = question.get("formula_decimal_places")
+    places = _as_int(raw)
+    if places is None or places < 0:
+        return 0, f"formula_decimal_places {raw!r} is not a whole number 0 or more; using 0."
+    return places, None
+
+
+def _variable_range_ok(v):
+    """True if a variable spec has a usable name and a finite min <= max range (with an integer inside it when scale is 0)."""
+    try:
+        lo, hi = float(v.get("min")), float(v.get("max"))
     except (TypeError, ValueError):
         return False
+    scale = _as_int(v.get("scale"))
     name = str(v.get("name") or "")
-    if not re.fullmatch(r'[A-Za-z_]\w*', name) or lo > hi:
+    if not re.fullmatch(r'[A-Za-z_]\w*', name) or scale is None or scale < 0:
+        return False
+    if not (math.isfinite(lo) and math.isfinite(hi)) or lo > hi:
         return False
     return scale > 0 or math.ceil(lo) <= math.floor(hi)
 
 
 def _sample_variable(v, rng):
-    """Draw one value for a variable spec, honoring its decimal places (scale)."""
-    lo, hi, scale = float(v["min"]), float(v["max"]), int(v.get("scale") or 0)
+    """Draw one value for a variable spec (already checked by _variable_range_ok), honoring its decimal places (scale)."""
+    lo, hi, scale = float(v["min"]), float(v["max"]), _as_int(v.get("scale"))
     if scale == 0:
         return rng.randint(math.ceil(lo), math.floor(hi))
     return round(rng.uniform(lo, hi), scale)
@@ -2038,7 +2063,10 @@ def _calculated_spec_warnings(question, variables, names, formulas):
     clash = [n for n in names if n in _FORMULA_FUNCS or n in _FORMULA_CONSTS]
     if clash:
         warnings.append(f"Variable name(s) {', '.join(clash)} collide with a function/constant name.")
-    if int(question.get("formula_decimal_places") or 0) > 0 and not question.get("answer_tolerance"):
+    places, places_warning = _decimal_places(question)
+    if places_warning:
+        warnings.append(places_warning)
+    if places > 0 and not question.get("answer_tolerance"):
         warnings.append("The answer has decimal places but no answer_tolerance, so students may be marked wrong for rounding differently.")
     return warnings, bool(bad)
 
@@ -2077,7 +2105,7 @@ def build_calculated_answer_sets(question, n_sets=10, seed=None):
     if not variables or not formulas or bad_range:
         return [], warnings + ["No answer sets could be computed, so Canvas would have no correct answers. Regenerate or fix the formula."]
 
-    dp = int(question.get("formula_decimal_places") or 0)
+    dp, _ = _decimal_places(question)
     sets, seen, errors, last_error = [], set(), 0, ""
     for _ in range(n_sets * 20):
         if len(sets) >= n_sets:
@@ -2099,6 +2127,16 @@ def build_calculated_answer_sets(question, n_sets=10, seed=None):
             "weight": 100,
         })
     return sets, warnings + _answer_set_warnings(sets, n_sets, errors, last_error)
+
+
+def calculated_canvas_fields(question):
+    """Formulas, decimal places and variables of an accepted calculated question, with the types Canvas expects."""
+    return {
+        "formulas": formula_strings(question.get("formulas")),
+        "formula_decimal_places": _decimal_places(question)[0],
+        "variables": [{"name": str(v["name"]), "min": float(v["min"]), "max": float(v["max"]), "scale": _as_int(v.get("scale"))}
+                      for v in question.get("variables") or [] if isinstance(v, dict) and _variable_range_ok(v)],
+    }
 
 
 def _answer_weight(a):

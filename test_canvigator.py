@@ -3192,6 +3192,42 @@ class TestCalculatedQuestionHelpers:
         from canvigator_llm import evaluate_formulas
         assert evaluate_formulas([expr], {}) == expected
 
+    @pytest.mark.parametrize("overrides", [
+        {"formula_decimal_places": "2.0", "answer_tolerance": 0.01},
+        {"formula_decimal_places": 2.0, "answer_tolerance": 0.01},
+        {"variables": [{"name": "n", "min": "2", "max": "10", "scale": "0.0"}, {"name": "k", "min": 3, "max": 5, "scale": "0"}]},
+        {"formulas": "n*(k-1)+1"},
+    ])
+    def test_build_answer_sets_tolerates_loosely_typed_fields(self, overrides):
+        """Numbers sent as strings or floats ("2.0", 2.0, "0.0") and a bare formula string still give answer sets."""
+        from canvigator_llm import build_calculated_answer_sets
+        sets, warnings = build_calculated_answer_sets(self._question(**overrides), seed=0)
+        assert len(sets) == 10
+        assert not any("invalid" in w or "could not be evaluated" in w for w in warnings)
+
+    @pytest.mark.parametrize("overrides, expected", [
+        ({"formula_decimal_places": "two"}, "formula_decimal_places"),
+        ({"formula_decimal_places": -1}, "formula_decimal_places"),
+        ({"variables": [{"name": "n", "min": "nan", "max": 10, "scale": 0}, {"name": "k", "min": 3, "max": 5, "scale": 0}]}, "invalid name or range"),
+        ({"variables": [{"name": "n", "min": 2, "max": "inf", "scale": 0}, {"name": "k", "min": 3, "max": 5, "scale": 0}]}, "invalid name or range"),
+        ({"variables": [{"name": "n", "min": 2, "max": 10, "scale": "two"}, {"name": "k", "min": 3, "max": 5, "scale": 0}]}, "invalid name or range"),
+    ])
+    def test_build_answer_sets_warns_instead_of_crashing_on_bad_numbers(self, overrides, expected):
+        """Unreadable numbers in a draft become warnings; they never raise."""
+        from canvigator_llm import build_calculated_answer_sets
+        _, warnings = build_calculated_answer_sets(self._question(**overrides), seed=0)
+        assert any(expected in w for w in warnings)
+
+    def test_calculated_canvas_fields_cleans_types(self):
+        """Accepted drafts go to Canvas with real numbers: int decimals/scale, float min/max, a list of formula strings."""
+        from canvigator_llm import calculated_canvas_fields
+        q = self._question(formula_decimal_places="2.0", formulas="n*(k-1)+1",
+                           variables=[{"name": "n", "min": "2", "max": "10", "scale": "0.0"}, {"name": "k", "min": 3, "max": 5, "scale": 0}])
+        assert calculated_canvas_fields(q) == {
+            "formulas": ["n*(k-1)+1"], "formula_decimal_places": 2,
+            "variables": [{"name": "n", "min": 2.0, "max": 10.0, "scale": 0}, {"name": "k", "min": 3.0, "max": 5.0, "scale": 0}],
+        }
+
     def test_fill_question_text(self):
         """[name] tokens are replaced by values; whole numbers print without a trailing .0; unknown tokens stay."""
         from canvigator_llm import fill_question_text
@@ -3309,6 +3345,40 @@ class TestCreateQuizFlow:
             q = _reviewGeneratedQuestion(self._llm_stub(draft), None, "m", "seed", 1)
         assert q is None
         assert "no computable answer sets" in capsys.readouterr().out
+
+    def test_review_accepts_loosely_typed_calculated_draft(self):
+        """A Formula draft with "2.0"-style numbers and a bare formula string is accepted with clean types."""
+        from canvigator_course import _reviewGeneratedQuestion
+        draft = {"question_type": "calculated_question", "question_name": "Sq", "question_text": "What is [x] squared?",
+                 "variables": [{"name": "x", "min": "2", "max": "9", "scale": "0.0"}], "formulas": "x^2",
+                 "formula_decimal_places": "0.0", "answers": []}
+        with patch("builtins.input", side_effect=["y"]):
+            q = _reviewGeneratedQuestion(self._llm_stub(draft), None, "m", "seed", 1)
+        assert q["formulas"] == ["x^2"] and q["formula_decimal_places"] == 0
+        assert q["variables"] == [{"name": "x", "min": 2.0, "max": 9.0, "scale": 0}]
+        assert len(q["answers"]) == 8
+
+    def test_review_survives_an_unexpected_check_error(self, capsys):
+        """If checking a draft raises, the instructor sees the error and can only regenerate or skip; nothing crashes."""
+        from canvigator_course import _reviewGeneratedQuestion
+        draft = {"question_type": "calculated_question", "question_name": "Q", "question_text": "[x]",
+                 "variables": [{"name": "x", "min": 1, "max": 9, "scale": 0}], "formulas": ["x"], "answers": []}
+        cl = self._llm_stub(draft)
+        cl.build_calculated_answer_sets = MagicMock(side_effect=RuntimeError("boom"))
+        with patch("builtins.input", side_effect=["y", "s"]):
+            q = _reviewGeneratedQuestion(cl, None, "m", "seed", 1)
+        assert q is None
+        out = capsys.readouterr().out
+        assert "could not be checked" in out and "boom" in out
+
+    def test_quiz_is_resaved_even_when_a_later_step_fails(self):
+        """If create-quiz stops after the quiz exists (e.g. a Canvas error), the quiz is still re-saved once."""
+        course, quiz = self._course()
+        quiz.create_question.side_effect = [None, RuntimeError("Canvas 500")]
+        with patch("builtins.input", side_effect=["y", "My quiz", "", "", "p", "one", "p", "two"]):
+            with pytest.raises(RuntimeError):
+                course.createQuiz()
+        quiz.edit.assert_called_once_with(quiz={"title": "My quiz"})
 
 
 # ---------------------------------------------------------------------------
