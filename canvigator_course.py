@@ -167,8 +167,8 @@ class CanvigatorCourse:
         The course name is confirmed first (adjacent menu entries are easy to mistype), quiz settings are
         prompted (Enter keeps 30 minutes / 1 attempt), and the Canvas quiz is only created once the first
         question is accepted, so ending early leaves no empty quiz behind. Once the quiz exists it is saved
-        again at the end, even if the session stops with an error, so Canvas recomputes its point total and
-        question count.
+        again at the end, even if the session stops with an error, because Canvas only recomputes the point
+        total when the quiz is saved (the question count catches up on its own).
         """
         course_name = getattr(self.canvas_course, 'name', '(unknown course)')
         if input(f"Create a quiz in '{course_name}'? [y/N]: ").strip().lower() != 'y':
@@ -217,7 +217,7 @@ class CanvigatorCourse:
                 logger.info(f"  Added question {position} ({question_dict['question_type']}): {question_dict['question_name']}")
                 position += 1
         finally:
-            if quiz is not None:  # re-save (even after an error) so Canvas recomputes points_possible / question_count
+            if quiz is not None:  # re-save (even after an error): points_possible stays empty until the quiz is saved
                 quiz.edit(quiz={'title': title})
 
         n_questions = position - 1
