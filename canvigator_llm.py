@@ -1899,6 +1899,15 @@ def _formula_fact(n):
     return math.factorial(n)
 
 
+def _one_argument_log(name, kind, fn):
+    """Wrap a log so a second (base) argument gets a clear message, rather than a Python error (log) or a silent base change (ln)."""
+    def log(x, *base):
+        if base:
+            raise ValueError(f"{name}() takes one argument ({kind}); for base b write ln(x)/ln(b)")
+        return fn(x)
+    return log
+
+
 def _round_half_up(x, places=0):
     """Round halves away from zero, as a student would (Python's round() sends 2.5 to 2 and 2.675 to 2.67).
 
@@ -1931,7 +1940,8 @@ class _PowToCall(ast.NodeTransformer):
 
 
 _FORMULA_FUNCS = {
-    "abs": abs, "sqrt": math.sqrt, "ln": math.log, "log": math.log10, "exp": math.exp,
+    "abs": abs, "sqrt": math.sqrt, "exp": math.exp,
+    "ln": _one_argument_log("ln", "natural log", math.log), "log": _one_argument_log("log", "base 10", math.log10),
     "sin": math.sin, "cos": math.cos, "tan": math.tan, "asin": math.asin, "acos": math.acos, "atan": math.atan,
     "ceil": math.ceil, "floor": math.floor, "round": _round_half_up, "min": min, "max": max,
     "fact": _formula_fact,

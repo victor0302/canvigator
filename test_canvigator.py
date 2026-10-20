@@ -3245,6 +3245,20 @@ class TestCalculatedQuestionHelpers:
             "variables": [{"name": "n", "min": 2.0, "max": 10.0, "scale": 0}, {"name": "k", "min": 3.0, "max": 5.0, "scale": 0}],
         }
 
+    @pytest.mark.parametrize("formula", ["log(x, 2)", "ln(x, 2)"])
+    def test_log_with_a_base_gets_a_clear_message(self, formula):
+        """log() is base 10 and ln() is natural, each with one argument; a base gets a message saying what to write instead."""
+        from canvigator_llm import evaluate_formulas
+        with pytest.raises(ValueError, match=r"ln\(x\)/ln\(b\)"):
+            evaluate_formulas([formula], {"x": 8})
+
+    def test_one_argument_logs_unchanged(self):
+        """Guard: log() stays base 10 and ln() stays natural."""
+        import math
+        from canvigator_llm import evaluate_formulas
+        assert evaluate_formulas(["log(x)"], {"x": 1000}) == pytest.approx(3)
+        assert evaluate_formulas(["ln(x)"], {"x": math.e}) == pytest.approx(1)
+
     @pytest.mark.parametrize("lo, hi, scale", [(1.0, 1.06, 1), (-1.06, -1.0, 1), (0.21, 0.29, 2), (2.5, 2.5, 1)])
     def test_sampled_decimal_values_stay_in_range(self, lo, hi, scale):
         """Decimal variables are drawn from the values inside [min, max]; rounding after the draw could step past either end."""
