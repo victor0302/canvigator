@@ -2010,19 +2010,28 @@ def _decimal_places(question):
     return places, None
 
 
+def _grid_steps(lo, hi, scale):
+    """Return ``(first, last)``: the values with ``scale`` decimals inside [lo, hi], counted in steps of 10**-scale.
+
+    Scaling through Decimal keeps it exact (as floats, 0.29 * 100 is 28.999999999999996, which would drop 0.29).
+    """
+    return math.ceil(Decimal(repr(lo)).scaleb(scale)), math.floor(Decimal(repr(hi)).scaleb(scale))
+
+
 def _variable_range_ok(v):
-    """True if a variable spec has a usable name and a finite min <= max range (with an integer inside it when scale is 0)."""
+    """True if a variable spec has a usable name, at most 15 decimals (scale), and a finite range with a value inside it."""
     try:
         lo, hi = float(v.get("min")), float(v.get("max"))
     except (TypeError, ValueError):
         return False
     scale = _as_int(v.get("scale"))
     name = str(v.get("name") or "")
-    if not re.fullmatch(r'[A-Za-z_]\w*', name) or scale is None or scale < 0:
+    if not re.fullmatch(r'[A-Za-z_]\w*', name) or scale is None or not 0 <= scale <= 15:  # floats hold ~15 decimal digits
         return False
     if not (math.isfinite(lo) and math.isfinite(hi)) or lo > hi:
         return False
-    return scale > 0 or math.ceil(lo) <= math.floor(hi)
+    first, last = _grid_steps(lo, hi, scale)
+    return first <= last
 
 
 def _sample_variable(v, rng):
@@ -2030,7 +2039,8 @@ def _sample_variable(v, rng):
     lo, hi, scale = float(v["min"]), float(v["max"]), _as_int(v.get("scale"))
     if scale == 0:
         return rng.randint(math.ceil(lo), math.floor(hi))
-    return round(rng.uniform(lo, hi), scale)
+    first, last = _grid_steps(lo, hi, scale)
+    return rng.randint(first, last) / 10 ** scale  # picking a step keeps the value inside [min, max]
 
 
 def fill_question_text(text, values):

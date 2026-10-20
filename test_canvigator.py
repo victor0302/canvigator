@@ -3226,6 +3226,8 @@ class TestCalculatedQuestionHelpers:
         ({"variables": [{"name": "n", "min": "nan", "max": 10, "scale": 0}, {"name": "k", "min": 3, "max": 5, "scale": 0}]}, "invalid name or range"),
         ({"variables": [{"name": "n", "min": 2, "max": "inf", "scale": 0}, {"name": "k", "min": 3, "max": 5, "scale": 0}]}, "invalid name or range"),
         ({"variables": [{"name": "n", "min": 2, "max": 10, "scale": "two"}, {"name": "k", "min": 3, "max": 5, "scale": 0}]}, "invalid name or range"),
+        ({"variables": [{"name": "n", "min": 1.01, "max": 1.04, "scale": 1}, {"name": "k", "min": 3, "max": 5, "scale": 0}]}, "invalid name or range"),
+        ({"variables": [{"name": "n", "min": 1, "max": 2, "scale": 400}, {"name": "k", "min": 3, "max": 5, "scale": 0}]}, "invalid name or range"),
     ])
     def test_build_answer_sets_warns_instead_of_crashing_on_bad_numbers(self, overrides, expected):
         """Unreadable numbers in a draft become warnings; they never raise."""
@@ -3242,6 +3244,16 @@ class TestCalculatedQuestionHelpers:
             "formulas": ["n*(k-1)+1"], "formula_decimal_places": 2,
             "variables": [{"name": "n", "min": 2.0, "max": 10.0, "scale": 0}, {"name": "k", "min": 3.0, "max": 5.0, "scale": 0}],
         }
+
+    @pytest.mark.parametrize("lo, hi, scale", [(1.0, 1.06, 1), (-1.06, -1.0, 1), (0.21, 0.29, 2), (2.5, 2.5, 1)])
+    def test_sampled_decimal_values_stay_in_range(self, lo, hi, scale):
+        """Decimal variables are drawn from the values inside [min, max]; rounding after the draw could step past either end."""
+        import random
+        from canvigator_llm import _sample_variable
+        rng = random.Random(0)
+        values = {_sample_variable({"name": "x", "min": lo, "max": hi, "scale": scale}, rng) for _ in range(500)}
+        assert all(lo <= x <= hi for x in values), sorted(values)
+        assert all(x == round(x, scale) for x in values)
 
     def test_fill_question_text(self):
         """[name] tokens are replaced by values; whole numbers print without a trailing .0; unknown tokens stay."""
