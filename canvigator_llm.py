@@ -1750,7 +1750,7 @@ _QUIZ_QUESTION_SYSTEM_PROMPT = (
     "\"distractor1\\ndistractor2\" (newline-separated string)\n"
     "  calculated_question:\n"
     "    [] (empty list); also include \"variables\": [{\"name\": \"x\", \"min\": 1, \"max\": 10, "
-    "\"scale\": 0}, ...] and \"formulas\": [{\"formula\": \"x*2\"}], plus "
+    "\"scale\": 0}, ...] and \"formulas\": [\"x*2\"], plus "
     "\"formula_decimal_places\": 0\n\n"
     "Rules:\n"
     "  - Output ONLY the JSON object — no ```json fences, no leading/trailing text.\n"
@@ -1786,7 +1786,7 @@ def _summarize_draft_for_prompt(draft):
     elif qtype == "calculated_question":
         for v in draft.get("variables") or []:
             parts.append(f"  Variable: {v}")
-        for f in draft.get("formulas") or []:
+        for f in formula_strings(draft.get("formulas")):  # plain strings, so a regenerate doesn't relearn the dict form
             parts.append(f"  Formula: {f}")
     else:
         for a in answers:

@@ -3056,6 +3056,21 @@ class TestQuizQuestionHelpers:
         assert _summarize_draft_for_prompt(None) == ""
         assert _summarize_draft_for_prompt("not a dict") == ""
 
+    def test_quiz_prompt_shows_formulas_as_plain_strings(self):
+        """The prompt's example shows formulas as plain strings, the form Canvas stores (models copy the example)."""
+        from canvigator_llm import _QUIZ_QUESTION_SYSTEM_PROMPT
+        assert '"formulas": ["x*2"]' in _QUIZ_QUESTION_SYSTEM_PROMPT
+        assert '{"formula"' not in _QUIZ_QUESTION_SYSTEM_PROMPT
+
+    def test_summarize_draft_renders_calculated_formulas_as_strings(self):
+        """A rejected Formula draft is summarized with plain formula strings, not {'formula': ...} dicts."""
+        from canvigator_llm import _summarize_draft_for_prompt
+        draft = {"question_type": "calculated_question", "question_text": "Half of [n]?",
+                 "variables": [{"name": "n", "min": 5, "max": 15, "scale": 0}], "formulas": [{"formula": "round(n/2)"}]}
+        summary = _summarize_draft_for_prompt(draft)
+        assert "Formula: round(n/2)" in summary
+        assert "{'formula'" not in summary
+
     def test_build_quiz_question_prompt_no_prior_drafts(self):
         """Without prior_drafts the prompt has no rejected-drafts section."""
         from canvigator_llm import _build_quiz_question_prompt
