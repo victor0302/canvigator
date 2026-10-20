@@ -3319,6 +3319,20 @@ class TestCreateQuizFlow:
         quiz.create_question.assert_called_once()
         quiz.edit.assert_called_once_with(quiz={"title": "My quiz"})
 
+    def test_blank_title_asks_again(self):
+        """One stray Enter at the title prompt asks again instead of ending the session."""
+        course, _ = self._course()
+        with patch("builtins.input", side_effect=["y", "", "My quiz", "", "", "p", "Counting question", "e"]):
+            course.createQuiz()
+        assert course.canvas_course.create_quiz.call_args[0][0]["title"] == "My quiz"
+
+    def test_two_blank_titles_cancel(self):
+        """Pressing Enter twice at the title prompt cancels cleanly, with nothing created."""
+        course, _ = self._course()
+        with patch("builtins.input", side_effect=["y", "", ""]):
+            course.createQuiz()
+        course.canvas_course.create_quiz.assert_not_called()
+
     def test_quiz_settings_defaults_and_reprompt(self):
         """Enter keeps 30 min / 1 attempt; invalid input re-prompts; 0 attempts is not allowed."""
         from canvigator_course import _promptQuizSettings

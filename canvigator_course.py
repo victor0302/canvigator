@@ -175,8 +175,10 @@ class CanvigatorCourse:
             print("Cancelled; no quiz created.")
             return
         title = input("Enter quiz title: ").strip()
+        if not title:  # one stray Enter asks again; a second one cancels
+            title = input("Quiz title cannot be empty. Enter a title (or press Enter again to cancel): ").strip()
         if not title:
-            print("Quiz title cannot be empty.")
+            print("Cancelled; no quiz created.")
             return
         settings = _promptQuizSettings(title)
 
