@@ -1274,7 +1274,7 @@ def _renderCalculatedPreview(cl, question_dict, answer_sets):
 
     Formulas and decimal places are shown as they will be sent to Canvas, not as the draft's raw JSON.
     """
-    for v in question_dict.get('variables') or []:
+    for v in cl.draft_list(question_dict.get('variables')):
         if isinstance(v, dict):
             print(f"      var:     {v.get('name')} from {_formatNumber(v.get('min'))} to {_formatNumber(v.get('max'))}, "
                   f"{_formatNumber(v.get('scale') or 0)} decimals")

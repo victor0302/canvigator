@@ -1784,7 +1784,7 @@ def _summarize_draft_for_prompt(draft):
                 right = a.get("answer_match_right", "")
                 parts.append(f"  Match: {left} -> {right}")
     elif qtype == "calculated_question":
-        for v in draft.get("variables") or []:
+        for v in draft_list(draft.get("variables")):
             parts.append(f"  Variable: {v}")
         for f in formula_strings(draft.get("formulas")):  # plain strings, so a regenerate doesn't relearn the dict form
             parts.append(f"  Formula: {f}")
@@ -1953,12 +1953,20 @@ _FORMULA_ASSIGNMENT_RE = re.compile(r'^\s*([A-Za-z_]\w*)\s*=(?!=)\s*(.+)$')
 _VARIABLE_TOKEN_RE = re.compile(r'\[([A-Za-z_]\w*)\]')
 
 
+def draft_list(value):
+    """A draft field that should be a list, as a list: a lone dict or string is wrapped, and anything else that
+    isn't a list (None, a number) is empty. Iterating the raw value would split a string into characters, walk a
+    dict's keys, or raise on a number.
+    """
+    if isinstance(value, list):
+        return value
+    return [value] if isinstance(value, (dict, str)) and value else []
+
+
 def formula_strings(formulas):
     """Normalize a formulas list to plain strings (Canvas drops formulas sent as {"formula": ...} objects)."""
-    if isinstance(formulas, (str, dict)):  # a lone formula; iterating a string would split it into characters
-        formulas = [formulas]
     out = []
-    for f in formulas or []:
+    for f in draft_list(formulas):
         if isinstance(f, dict):
             f = f.get("formula", "")
         if isinstance(f, str) and f.strip():
@@ -2118,7 +2126,7 @@ def build_calculated_answer_sets(question, n_sets=10, seed=None):
     within each variable's [min, max] range; the last formula line gives the answer.
     """
     rng = random.Random(seed)
-    variables = [v for v in (question.get("variables") or []) if isinstance(v, dict)]
+    variables = [v for v in draft_list(question.get("variables")) if isinstance(v, dict)]
     names = [str(v.get("name") or "") for v in variables]
     formulas = formula_strings(question.get("formulas"))
     warnings, bad_range = _calculated_spec_warnings(question, variables, names, formulas)
@@ -2155,7 +2163,7 @@ def calculated_canvas_fields(question):
         "formulas": formula_strings(question.get("formulas")),
         "formula_decimal_places": _decimal_places(question)[0],
         "variables": [{"name": str(v["name"]), "min": float(v["min"]), "max": float(v["max"]), "scale": _as_int(v.get("scale"))}
-                      for v in question.get("variables") or [] if isinstance(v, dict) and _variable_range_ok(v)],
+                      for v in draft_list(question.get("variables")) if isinstance(v, dict) and _variable_range_ok(v)],
     }
 
 

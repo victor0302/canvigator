@@ -3235,6 +3235,29 @@ class TestCalculatedQuestionHelpers:
         _, warnings = build_calculated_answer_sets(self._question(**overrides), seed=0)
         assert any(expected in w for w in warnings)
 
+    @pytest.mark.parametrize("overrides, expected", [
+        ({"variables": 5}, "No variables are defined."),
+        ({"variables": True}, "No variables are defined."),
+        ({"formulas": 7}, "No formula is defined."),
+        ({"formulas": 2.5}, "No formula is defined."),
+    ])
+    def test_non_list_formula_fields_warn_instead_of_crashing(self, overrides, expected):
+        """A number where the list of variables or formulas belongs is a warning in every helper, never an exception."""
+        from canvigator_llm import build_calculated_answer_sets, calculated_canvas_fields, _summarize_draft_for_prompt
+        q = self._question(**overrides)
+        _, warnings = build_calculated_answer_sets(q, seed=0)
+        assert any(expected in w for w in warnings)
+        calculated_canvas_fields(q)
+        assert "Type: calculated_question" in _summarize_draft_for_prompt(q)
+
+    def test_lone_variable_dict_is_read_as_a_list(self):
+        """A single variable dict not wrapped in a list is used, the same way a lone formula string is."""
+        from canvigator_llm import build_calculated_answer_sets, calculated_canvas_fields
+        q = self._question(question_text="Add one to [n].", variables={"name": "n", "min": 2, "max": 10, "scale": 0}, formulas="n+1")
+        sets, warnings = build_calculated_answer_sets(q, seed=0)
+        assert len(sets) == 9 and warnings == []
+        assert calculated_canvas_fields(q)["variables"] == [{"name": "n", "min": 2.0, "max": 10.0, "scale": 0}]
+
     def test_calculated_canvas_fields_cleans_types(self):
         """Accepted drafts go to Canvas with real numbers: int decimals/scale, float min/max, a list of formula strings."""
         from canvigator_llm import calculated_canvas_fields
@@ -3439,6 +3462,17 @@ class TestCreateQuizFlow:
         assert q is None
         out = capsys.readouterr().out
         assert "could not be checked" in out and "boom" in out
+
+    @pytest.mark.parametrize("field, value", [("variables", 5), ("formulas", 7)])
+    def test_review_survives_non_list_formula_fields(self, field, value, capsys):
+        """A draft with a number where a list belongs is previewed and refused; the preview doesn't crash the session."""
+        from canvigator_course import _reviewGeneratedQuestion
+        draft = {"question_type": "calculated_question", "question_name": "Q", "question_text": "[x]",
+                 "variables": [{"name": "x", "min": 1, "max": 9, "scale": 0}], "formulas": ["x"], "answers": [], field: value}
+        with patch("builtins.input", side_effect=["y", "s"]):
+            q = _reviewGeneratedQuestion(self._llm_stub(draft), None, "m", "seed", 1)
+        assert q is None
+        assert "Choose 'r' or 's'" in capsys.readouterr().out
 
     def test_quiz_is_resaved_even_when_a_later_step_fails(self):
         """If create-quiz stops after the quiz exists (e.g. a Canvas error), the quiz is still re-saved once."""
