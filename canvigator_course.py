@@ -1260,15 +1260,30 @@ def _renderWarnings(warnings):
             print(f"        ! {w}")
 
 
+def _formatNumber(x):
+    """Show a draft number the way a person writes it (5.0 → 5, "2.5" → 2.5); anything else as given."""
+    try:
+        f = float(x)
+    except (TypeError, ValueError):
+        return repr(x)
+    return str(int(f)) if f.is_integer() else str(f)
+
+
 def _renderCalculatedPreview(cl, question_dict, answer_sets):
-    """Print variables/formulas plus one worked example (what a student would see and the correct answer)."""
+    """Print variables/formulas plus one worked example (what a student would see and the correct answer).
+
+    Formulas and decimal places are shown as they will be sent to Canvas, not as the draft's raw JSON.
+    """
     for v in question_dict.get('variables') or []:
-        print(f"      var:     {v}")
-    for f in question_dict.get('formulas') or []:
+        if isinstance(v, dict):
+            print(f"      var:     {v.get('name')} from {_formatNumber(v.get('min'))} to {_formatNumber(v.get('max'))}, "
+                  f"{_formatNumber(v.get('scale') or 0)} decimals")
+        else:
+            print(f"      var:     {v!r}")
+    fields = cl.calculated_canvas_fields(question_dict)
+    for f in fields['formulas']:
         print(f"      formula: {f}")
-    dp = question_dict.get('formula_decimal_places')
-    if dp is not None:
-        print(f"      decimals: {dp}")
+    print(f"      decimals: {fields['formula_decimal_places']}")
     if not answer_sets:
         return
     example = answer_sets[0]

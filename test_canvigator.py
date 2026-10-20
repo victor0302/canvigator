@@ -3333,6 +3333,20 @@ class TestCreateQuizFlow:
             course.createQuiz()
         course.canvas_course.create_quiz.assert_not_called()
 
+    def test_calculated_preview_shows_values_as_canvas_gets_them(self, capsys):
+        """The Formula preview shows the cleaned formula, decimals and ranges that will be sent, not the draft's raw JSON."""
+        import canvigator_llm as cl
+        from canvigator_course import _renderCalculatedPreview
+        q = {"question_type": "calculated_question", "question_text": "Half of [n]?",
+             "variables": [{"name": "n", "min": 5.0, "max": "15", "scale": "0.0"}],
+             "formulas": [{"formula": "round(n/2)"}], "formula_decimal_places": "2.0"}
+        _renderCalculatedPreview(cl, q, [])
+        out = capsys.readouterr().out
+        assert "formula: round(n/2)\n" in out
+        assert "decimals: 2\n" in out
+        assert "var:     n from 5 to 15, 0 decimals\n" in out
+        assert "{" not in out and "2.0" not in out
+
     def test_quiz_settings_defaults_and_reprompt(self):
         """Enter keeps 30 min / 1 attempt; invalid input re-prompts; 0 attempts is not allowed."""
         from canvigator_course import _promptQuizSettings
