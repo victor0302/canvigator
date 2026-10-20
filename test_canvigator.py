@@ -3370,6 +3370,23 @@ class TestCreateQuizFlow:
             course.createQuiz()
         course.canvas_course.create_quiz.assert_not_called()
 
+    @pytest.mark.parametrize("formula, places, pattern", [
+        ("x/3", 2, r"-?\d+\.\d\d"), ("round(x/2)", 0, r"-?\d+"), ("-x/100000", 2, r"0\.00"),
+    ])
+    def test_calculated_preview_shows_answers_with_the_question_decimals(self, capsys, formula, places, pattern):
+        """Preview answers all show the question's decimal places (3.00, not 3.0, next to 6.33; 0.00, not -0.00); whole-number questions show integers."""
+        import re
+        import canvigator_llm as cl
+        from canvigator_course import _renderCalculatedPreview
+        q = {"question_type": "calculated_question", "question_text": "[x]", "variables": [{"name": "x", "min": 1, "max": 20, "scale": 0}],
+             "formulas": [formula], "formula_decimal_places": places, "answer_tolerance": 0.01}
+        sets, _ = cl.build_calculated_answer_sets(q, seed=0)
+        _renderCalculatedPreview(cl, q, sets)
+        out = capsys.readouterr().out
+        shown = re.findall(r"correct answer: (\S+)", out) + re.search(r"other sampled answers: (.*)", out).group(1).split(", ")
+        assert len(shown) == 6
+        assert all(re.fullmatch(pattern, s) for s in shown), shown
+
     def test_calculated_preview_shows_values_as_canvas_gets_them(self, capsys):
         """The Formula preview shows the cleaned formula, decimals and ranges that will be sent, not the draft's raw JSON."""
         import canvigator_llm as cl

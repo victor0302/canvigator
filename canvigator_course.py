@@ -1269,6 +1269,14 @@ def _formatNumber(x):
     return str(int(f)) if f.is_integer() else str(f)
 
 
+def _formatAnswer(answer, places):
+    """Show an answer with the question's decimal places: answers are stored as numbers, so 3.00 would print as 3.0.
+
+    Adding 0.0 turns -0.0 (a tiny negative rounded to zero) into 0.0, so it doesn't print as -0.00.
+    """
+    return f"{float(answer) + 0.0:.{places}f}"
+
+
 def _renderCalculatedPreview(cl, question_dict, answer_sets):
     """Print variables/formulas plus one worked example (what a student would see and the correct answer).
 
@@ -1290,8 +1298,9 @@ def _renderCalculatedPreview(cl, question_dict, answer_sets):
     values = {v['name']: v['value'] for v in example['variables']}
     print("      WORKED EXAMPLE (check that this answer is right):")
     print(f"        student sees:   {cl.fill_question_text(question_dict.get('question_text', ''), values)}")
-    print(f"        correct answer: {example['answer_text']}")
-    others = [str(s['answer_text']) for s in answer_sets[1:6]]
+    places = fields['formula_decimal_places']
+    print(f"        correct answer: {_formatAnswer(example['answer_text'], places)}")
+    others = [_formatAnswer(s['answer_text'], places) for s in answer_sets[1:6]]
     if others:
         print(f"      other sampled answers: {', '.join(others)}")
 
