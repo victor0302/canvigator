@@ -807,19 +807,31 @@ def _interactiveSend(canvas, messages, subject_str, header_label, send_all=False
 
     global SEND_STOPPED_EARLY
     sent_messages = []
+    # done: messages sent, skipped or failed; in_flight: a stop landed during that message's Canvas call
+    progress = {'done': 0, 'failed': 0, 'in_flight': 0}
     try:
-        _sendEach(canvas, messages, subject_str, send_all, sent_messages)
+        _sendEach(canvas, messages, subject_str, send_all, sent_messages, progress)
     except (KeyboardInterrupt, EOFError):
         SEND_STOPPED_EARLY = True
         # Return what was already sent so the caller still records it; otherwise a
         # re-run would message those students again.
-        print(f"\n\nStopped early: {len(sent_messages)} message(s) were sent and will be recorded.")
-        logger.warning(f"Interactive send interrupted after {len(sent_messages)} sent")
+        n_sent = len(sent_messages)
+        counts = [f"{n_sent} sent", f"{progress['done'] - n_sent - progress['failed']} skipped"]
+        if progress['failed']:
+            counts.append(f"{progress['failed']} failed")
+        if progress['in_flight']:
+            counts.append(f"{progress['in_flight']} may have been sent (check Canvas)")
+        counts.append(f"{len(messages) - progress['done'] - progress['in_flight']} not sent")
+        saving = " Saving the record of the sent message(s)." if n_sent else ""
+        print(f"\n\nStopped early: {', '.join(counts)}.{saving}")
+        logger.warning(f"Interactive send interrupted: {', '.join(counts)}")
+        return sent_messages
 
     n_sent = len(sent_messages)
-    n_skipped = len(messages) - n_sent
-    print(f"\n{n_sent} message(s) sent, {n_skipped} skipped.")
-    logger.info(f"Interactive send: {n_sent} sent, {n_skipped} skipped")
+    n_skipped = len(messages) - n_sent - progress['failed']
+    failed = f", {progress['failed']} failed" if progress['failed'] else ""
+    print(f"\n{n_sent} message(s) sent, {n_skipped} skipped{failed}.")
+    logger.info(f"Interactive send: {n_sent} sent, {n_skipped} skipped{failed}")
     return sent_messages
 
 
@@ -829,8 +841,14 @@ def _inFlightStopNotice(student_name, student_id):
             "reached Canvas without being recorded: check Canvas before re-running.")
 
 
-def _sendEach(canvas, messages, subject_str, send_all, sent_messages):
-    """Prompt for and send each message, appending sent ones to ``sent_messages`` as it goes."""
+def _sendEach(canvas, messages, subject_str, send_all, sent_messages, progress):
+    """Prompt for and send each message, appending sent ones to ``sent_messages`` as it goes.
+
+    ``progress`` counts the messages finished (``done``: sent, skipped or failed), the
+    failed sends (``failed``), and a message whose Canvas call a stop interrupted
+    (``in_flight``: it may have been sent), so a stop can report each apart from the
+    messages never reached.
+    """
     for i, (student_id, student_name, message_str, reason) in enumerate(messages, 1):
         print(f"--- Student {i}/{len(messages)} ---")
         print(f"  To: {student_name} (id: {student_id}, {reason})")
@@ -850,17 +868,21 @@ def _sendEach(canvas, messages, subject_str, send_all, sent_messages):
                 )
             except KeyboardInterrupt:
                 # The message may have reached Canvas without being recorded.
+                progress['in_flight'] = 1
                 print(_inFlightStopNotice(student_name, student_id))
                 raise
             except Exception as e:
                 print(f"  -> ERROR sending: {e}\n")
                 logger.warning(f"create_conversation failed for student id={student_id}: {e}")
+                progress['done'] += 1
+                progress['failed'] += 1
                 continue
             convo_id = convos[0].id if convos else None
             print(f"  -> Sent! (conversation_id={convo_id})\n")
             sent_messages.append((student_id, student_name, message_str, reason, convo_id))
         else:
             print("  -> Skipped.\n")
+        progress['done'] += 1
 
 
 REPORT_POLL_SECONDS = 2.0             # how often to ask Canvas whether the quiz report is ready

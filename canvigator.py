@@ -489,7 +489,7 @@ else:
 
 if cq.SEND_STOPPED_EARLY:
     # Messages already sent were recorded; exit non-zero so the stop isn't mistaken for success.
-    print("\n*** Stopped early: see the messages above ***\n")
+    print("\n*** Exited early (code 130): see the messages above ***\n")
     sys.exit(130)
 
 print("\n*** Done ***\n")

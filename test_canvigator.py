@@ -6589,7 +6589,7 @@ class TestSafetyFixFollowUps:
             cq._interactiveSend(MagicMock(), [(11, 'Ann Lee', 'm1', 'missed')], 'subj', 'hdr')
         assert cq.SEND_STOPPED_EARLY is False
 
-    @pytest.mark.parametrize('stopped, rc_expected, text', [(True, 130, 'Stopped early'), (False, 0, '*** Done ***')])
+    @pytest.mark.parametrize('stopped, rc_expected, text', [(True, 130, 'Exited early'), (False, 0, '*** Done ***')])
     def test_cli_exit_code_reflects_a_stopped_send(self, stopped, rc_expected, text, tmp_path):
         """Run the real canvigator.py to the end (Canvas and the task faked): a stopped send exits 130, else 0."""
         import os
@@ -6604,7 +6604,8 @@ class TestSafetyFixFollowUps:
             "cu.selectCourse = lambda canvas: MagicMock()\n"
             "cc.CanvigatorCourse = MagicMock()\n"
             "cu.selectCSVFromList = lambda *a, **k: 'tagged.csv'\n"
-            f"cq.generateOpenEndedQuestions = lambda path: setattr(cq, 'SEND_STOPPED_EARLY', {stopped})\n"
+            f"cq.generateOpenEndedQuestions = lambda path: ({stopped} and print('Stopped early: 1 sent'), "
+            f"setattr(cq, 'SEND_STOPPED_EARLY', {stopped}))\n"
             "sys.argv = ['canvigator.py', 'generate-follow-up-questions']\n"
             "runpy.run_path('canvigator.py', run_name='__main__')\n"
         )
@@ -6616,6 +6617,7 @@ class TestSafetyFixFollowUps:
         assert result.returncode == rc_expected, result.stdout + result.stderr
         assert text in result.stdout
         assert ('*** Done ***' in result.stdout) == (not stopped)
+        assert result.stdout.count('Stopped early') == (1 if stopped else 0)   # the task's line only, not the banner too
 
     def test_constructor_uses_the_safe_prefix(self, tmp_path):
         """CanvigatorQuiz.__init__ builds the file prefix with _quizNameFromTitle."""
@@ -6654,6 +6656,139 @@ class TestSafetyFixFollowUps:
         text = TASK_HELP[task]['description']
         assert 'asks' in text and 'replaces' in text
         assert 'keeps only the later one' not in text   # not true when the two runs pick different attempts
+
+
+class TestStoppedSendOutput:
+    """After a stop: sent / skipped / not reached are counted apart, and the record is confirmed once saved."""
+
+    MESSAGES = [(11, 'Ann Lee', 'm1', 'missed'), (12, 'Bo Diaz', 'm2', 'missed'), (13, 'Cy Park', 'm3', 'missed')]
+
+    @pytest.mark.parametrize('answers, expected', [
+        (['', KeyboardInterrupt()], '0 sent, 1 skipped, 2 not sent.'),
+        (['y', EOFError()], '1 sent, 0 skipped, 2 not sent.'),
+        (['y', '', 'y'], None),
+    ])
+    def test_messages_never_shown_are_not_counted_as_skipped(self, answers, expected, capsys):
+        """Stopping at student 2 of 3 leaves 2 not sent; a full run prints the usual sent/skipped line."""
+        import canvigator_quiz as cq
+        canvas = MagicMock()
+        canvas.create_conversation.return_value = [SimpleNamespace(id=501)]
+        with patch('builtins.input', side_effect=answers):
+            cq._interactiveSend(canvas, self.MESSAGES, 'subj', 'hdr')
+        out = capsys.readouterr().out
+        if expected:
+            assert expected in out
+            assert 'message(s) sent,' not in out   # no second summary that counts the unreached as skipped
+            assert ('Saving the record' in out) == expected.startswith('1 sent')   # nothing to save when 0 were sent
+        else:
+            assert '2 message(s) sent, 1 skipped.' in out
+            assert 'not sent' not in out
+
+    def test_stop_during_the_canvas_call_counts_that_student_as_maybe_sent(self, capsys):
+        """--send-all, Ctrl-C inside the 2nd send: that one may have reached Canvas, so it isn't counted as not sent."""
+        import canvigator_quiz as cq
+        canvas = MagicMock()
+        canvas.create_conversation.side_effect = [[SimpleNamespace(id=501)], KeyboardInterrupt()]
+        cq._interactiveSend(canvas, self.MESSAGES, 'subj', 'hdr', send_all=True)
+        out = capsys.readouterr().out
+        assert '1 sent, 0 skipped, 1 may have been sent (check Canvas), 1 not sent.' in out
+        assert 'Stopped while sending to Bo Diaz' in out
+
+    def test_record_is_confirmed_only_after_it_is_saved(self, tmp_path):
+        """send-quiz-reminder stopped after one send: 'Saving the record' first; 'Manifest saved' only once the file exists."""
+        import builtins
+        quiz = TestSendTasksKeepRecordsAfterStop()._quiz(tmp_path)
+        quiz._loadQuestionInfo = lambda: {}
+        quiz._buildQuizScores = lambda: {}
+        quiz._classifyStudentForQuiz = lambda *a, **k: ('no attempt', None)
+        printed = []   # (text, whether the real-send record existed when it was printed)
+        real_print = builtins.print
+
+        def recording_print(*args, **kwargs):
+            text = ' '.join(str(a) for a in args)
+            printed.append((text, any(f for f in tmp_path.glob('quiz3_999_reminder_sent_*.csv') if 'dryrun' not in f.name)))
+            real_print(*args, **kwargs)
+
+        with patch('builtins.input', side_effect=['y', KeyboardInterrupt()]), patch('builtins.print', recording_print):
+            quiz.sendQuizReminders()
+        texts = [t for t, _ in printed]
+        assert not any('will be recorded' in t for t in texts)
+        saving = next(i for i, t in enumerate(texts) if 'Saving the record' in t)
+        saved = next(i for i, t in enumerate(texts) if 'Manifest saved: quiz3_999_reminder_sent_' in t)
+        assert saving < saved
+        assert printed[saving][1] is False and printed[saved][1] is True
+
+    def test_failed_send_then_stop_counts_the_failure_as_failed(self, capsys):
+        """Send error for student 1 (after 'y'), Ctrl-C at student 2 -> '1 failed', not 'skipped' (the instructor said yes)."""
+        import canvigator_quiz as cq
+        canvas = MagicMock()
+        canvas.create_conversation.side_effect = RuntimeError('Canvas said no')
+        with patch('builtins.input', side_effect=['y', KeyboardInterrupt()]):
+            cq._interactiveSend(canvas, self.MESSAGES, 'subj', 'hdr')
+        assert '0 sent, 0 skipped, 1 failed, 2 not sent.' in capsys.readouterr().out
+
+    def test_failed_send_is_counted_as_failed_in_the_normal_summary(self, capsys):
+        """Error for student 1, 'y' for 2, skip 3 -> '1 message(s) sent, 1 skipped, 1 failed.'"""
+        import canvigator_quiz as cq
+        canvas = MagicMock()
+        canvas.create_conversation.side_effect = [RuntimeError('Canvas said no'), [SimpleNamespace(id=502)]]
+        with patch('builtins.input', side_effect=['y', 'y', '']):
+            cq._interactiveSend(canvas, self.MESSAGES, 'subj', 'hdr')
+        assert '1 message(s) sent, 1 skipped, 1 failed.' in capsys.readouterr().out
+
+    @staticmethod
+    def _print_log(tmp_path, record_glob):
+        """Patch print to log (text, whether a real-send record matching record_glob existed at that moment)."""
+        import builtins
+        printed = []
+        real_print = builtins.print
+
+        def recording_print(*args, **kwargs):
+            exists = any(f for f in tmp_path.glob(record_glob) if 'dryrun' not in f.name)
+            printed.append((' '.join(str(a) for a in args), exists))
+            real_print(*args, **kwargs)
+
+        return printed, patch('builtins.print', recording_print)
+
+    @staticmethod
+    def _assert_saved_after_write(printed):
+        texts = [t for t, _ in printed]
+        saving = next(i for i, t in enumerate(texts) if 'Saving the record' in t)
+        saved = next(i for i, t in enumerate(texts) if 'Manifest saved:' in t)
+        assert saving < saved
+        assert printed[saving][1] is False and printed[saved][1] is True
+
+    def test_follow_up_record_is_confirmed_only_after_it_is_saved(self, tmp_path):
+        """send-follow-up-question stopped after one send: 'Manifest saved' only once the record exists."""
+        quiz = TestSendTasksKeepRecordsAfterStop()._quiz(tmp_path)
+        quiz._loadQuestionInfo = lambda: {100: {'position': 2, 'keywords': 'water'}}
+        quiz._loadOpenEndedQuestions = lambda: {100: {'question_mode': 'explain', 'open_ended_question': 'Explain it.'}}
+        quiz._classifyStudentsByQuestionResult = lambda qid, df, info: {11: 'missed', 12: 'correct', 13: 'missed'}
+        printed, print_patch = self._print_log(tmp_path, 'quiz3_999_followup_sent_*.csv')
+        with patch('builtins.input', side_effect=['y', KeyboardInterrupt()]), print_patch:
+            quiz.sendFollowUpQuestions()
+        self._assert_saved_after_write(printed)
+
+    def test_course_reminder_record_is_confirmed_only_after_it_is_saved(self, tmp_path, monkeypatch):
+        """send-quiz-reminder --all stopped after one send: 'Manifest saved' only once the record exists."""
+        import canvigator_course
+        from canvigator_course import CanvigatorCourse
+        monkeypatch.setattr(canvigator_course.cu, 'is_quiz_open_for_reminder', lambda q: True)
+        q = SimpleNamespace(id=999, title='Quiz 3', points_possible=5, due_at='2099-01-01T00:00:00Z')
+        per_quiz = SimpleNamespace(_tryLoadRecentSubmissions=lambda: True, all_subs_by_question=pd.DataFrame(),
+                                   all_subs_and_events=pd.DataFrame(), _buildQuizScores=lambda: {},
+                                   _classifyStudentForQuiz=lambda *a, **k: ('no attempt', None))
+        course = CanvigatorCourse.__new__(CanvigatorCourse)
+        course.canvas = MagicMock()
+        course.canvas.create_conversation.return_value = [SimpleNamespace(id=501)]
+        course.canvas_course = SimpleNamespace(get_quizzes=lambda: [q], course_code='CSI-1000-001-12345')
+        course.config = SimpleNamespace(data_path=tmp_path)
+        course.students = TestSendTasksKeepRecordsAfterStop.STUDENTS
+        course._loadQuizForReminder = lambda quiz: (per_quiz, {})
+        printed, print_patch = self._print_log(tmp_path, 'course_reminder_sent_*.csv')
+        with patch('builtins.input', side_effect=['y', KeyboardInterrupt()]), print_patch:
+            course.sendAllQuizReminders()
+        self._assert_saved_after_write(printed)
 
 
 # ---------------------------------------------------------------------------
