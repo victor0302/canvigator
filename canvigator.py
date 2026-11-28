@@ -217,6 +217,13 @@ save_transcript_flag = '--save-transcript' in args
 while '--save-transcript' in args:   # a repeated flag is harmless
     args.remove('--save-transcript')
 
+# A flag that takes a value can't be repeated: the two values could conflict
+# (e.g. two CRNs), so stop and name it. `<task> --help` still shows help.
+for _flag in ('--crn', '--consent', '--months', '--reply-window-days', '--days'):
+    if args.count(_flag) > 1 and not help_requested:
+        print(f"Error: {_flag} was given more than once; give it once.")
+        sys.exit(1)
+
 crn = None
 if '--crn' in args:
     crn_idx = args.index('--crn')

@@ -6152,11 +6152,27 @@ class TestLeftoverCliArguments:
         assert 'Unrecognized argument' not in out
         assert 'CANVAS_URL' in out
 
-    def test_repeated_value_flag_is_still_rejected(self):
-        """Two --crn values could conflict, so the second one is still reported."""
-        rc, out = _run_cli_no_canvas('award-bonus', '--crn', '11111', '--crn', '22222')
-        assert rc != 0
-        assert 'Unrecognized argument' in out and '22222' in out
+    @pytest.mark.parametrize('flag, values', [
+        ('--crn', ('--crn', '11111', '--crn', '22222')),
+        ('--crn', ('-c', '11111', '--crn', '22222')),
+        ('--consent', ('--consent', 'a.csv', '--consent', 'b.csv')),
+        ('--months', ('--months', '3', '-m', '4')),
+        ('--reply-window-days', ('-w', '5', '--reply-window-days', '6')),
+        ('--days', ('--days', '7', '-n', '8')),
+    ])
+    def test_repeated_value_flag_is_named(self, flag, values):
+        """Two values could conflict, so the run stops and says which flag was repeated (not 'Unrecognized')."""
+        rc, out = _run_cli_no_canvas('award-bonus', *values)
+        assert rc == 1
+        assert f'{flag} was given more than once' in out
+        assert 'Unrecognized argument' not in out
+        assert 'CANVAS_URL' not in out
+
+    def test_help_still_wins_over_a_repeated_value_flag(self):
+        """`<task> --help` shows help even with a repeated value flag."""
+        rc, out = _run_cli_no_canvas('award-bonus', '--crn', '11111', '--crn', '22222', '--help')
+        assert rc == 0
+        assert 'given more than once' not in out
 
     def test_valid_flags_still_reach_the_canvas_check(self):
         """A correct `--dry-run` in either position is accepted (it then needs Canvas credentials)."""
