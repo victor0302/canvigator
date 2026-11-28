@@ -88,7 +88,7 @@ must have been run first for the same quiz so that the submission CSVs exist.
 | | `data/<course>/<quiz>_<id>_all_subs_and_events_YYYYMMDD.csv` (from `get-quiz-submission-events`) |
 | **Output** | `data/<course>/<quiz>_<id>_detected_partners_YYYYMMDD.csv` — detected partner groups |
 | | `data/<course>/<quiz>_<id>_retake_qualified_YYYYMMDD.csv` — students qualifying for retake bonus |
-| | `data/<course>/<quiz>_<id>_scores_w_bonus_YYYYMMDD.csv` — scores with partner_bonus, retake_bonus, and combined bonus columns |
+| | `data/<course>/<quiz>_<id>_scores_w_bonus_YYYYMMDD.csv` — scores with partner_bonus, retake_bonus and combined bonus columns, plus bonus_awarded (what was set on Canvas, or in a dry run what would be; 0 for a student with no submission) and score_w_bonus |
 | **Canvas side-effect** | Sets `fudge_points` on the student's highest-scoring attempt and leaves a submission comment describing the bonus breakdown (skipped in `--dry-run` mode) |
 
 Use `--dry-run` to preview which students would receive bonus points without
@@ -96,8 +96,13 @@ modifying anything in Canvas. In dry-run mode the scores CSV is named
 `*_scores_w_bonus_dryrun_*.csv`. A live run first shows how many students and
 points it will award and asks `[y/N]`; anything other than `y` (including
 Ctrl-C or Ctrl-D) cancels without changing Canvas or writing the scores CSV.
-Only students with a Canvas submission for the quiz are counted and awarded;
-any student who earned a bonus but has no submission is named and skipped.
+After a typed answer the run ends with "*** Cancelled ***" (exit code 0); after
+Ctrl-C or Ctrl-D it ends with "*** Exited early (code 130) ***", as for a
+stopped send. A live run that awards ends by saying how many students got a
+bonus and where the scores CSV was saved. Only students with a Canvas
+submission for the quiz are counted and awarded; any student who earned a
+bonus but has no submission is named and skipped (if none is left, nothing is
+asked and nothing is awarded).
 
 ---
 
@@ -118,7 +123,7 @@ must have been run first for the same quiz.
 | | `data/<course>/<quiz>_<id>_all_subs_by_question_YYYYMMDD.csv` (from `get-quiz-submission-events`) |
 | | `data/<course>/<quiz>_<id>_all_subs_and_events_YYYYMMDD.csv` (from `get-quiz-submission-events`) |
 | **Output** | `data/<course>/<quiz>_<id>_detected_partners_YYYYMMDD.csv` — detected partner groups |
-| | `data/<course>/<quiz>_<id>_scores_w_bonus_YYYYMMDD.csv` — scores with bonus column |
+| | `data/<course>/<quiz>_<id>_scores_w_bonus_YYYYMMDD.csv` — scores with bonus, bonus_awarded and score_w_bonus columns |
 | **Canvas side-effect** | Sets `fudge_points` on the student's highest-scoring attempt and leaves a submission comment (skipped in `--dry-run` mode) |
 
 ---
@@ -137,5 +142,5 @@ must have been run first for the same quiz.
 |---|---|
 | **Input** | `data/<course>/<quiz>_<id>_all_submissions_YYYYMMDD.csv` (from `get-quiz-submission-events`) |
 | **Output** | `data/<course>/<quiz>_<id>_retake_qualified_YYYYMMDD.csv` — students qualifying for retake bonus |
-| | `data/<course>/<quiz>_<id>_scores_w_bonus_YYYYMMDD.csv` — scores with bonus column |
+| | `data/<course>/<quiz>_<id>_scores_w_bonus_YYYYMMDD.csv` — scores with bonus, bonus_awarded and score_w_bonus columns |
 | **Canvas side-effect** | Sets `fudge_points` on the student's highest-scoring attempt and leaves a submission comment (skipped in `--dry-run` mode) |

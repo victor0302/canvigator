@@ -771,9 +771,13 @@ def _quizNameFromTitle(title):
     return name.replace("/", "-")
 
 
-# Set when an interactive send was stopped early (Ctrl-C / EOF); canvigator.py then
-# exits non-zero instead of printing "Done".
+# Set when an interactive send or confirmation was stopped early (Ctrl-C / EOF);
+# canvigator.py then exits non-zero instead of printing "Done".
 SEND_STOPPED_EARLY = False
+
+# Set when the instructor answered no at a confirmation (e.g. award-bonus); canvigator.py
+# then prints "Cancelled" instead of "Done" (exit 0: a deliberate no is a normal outcome).
+TASK_CANCELLED = False
 
 
 def _bonusCommentText(p_bonus, r_bonus, bonus_val):
@@ -3215,21 +3219,25 @@ class CanvigatorQuiz:
         Only students with a Canvas submission are counted, because the award loop walks
         the submissions; Ctrl-C or closed input at the prompt cancels.
         """
+        global SEND_STOPPED_EARLY, TASK_CANCELLED
         awarded = quiz_summary[(quiz_summary['bonus'] > 0) & quiz_summary['id'].isin(submitted_ids)]
         if awarded.empty:
             return True
+        total = awarded['bonus'].sum()
         print(f"\nAbout to award bonus points on Canvas for '{self.canvas_quiz.title}': "
-              f"{len(awarded)} student(s), {awarded['bonus'].sum():g} points in total.")
-        print("Canvas replaces any bonus already on a student's attempt (it does not add), so a later "
-              "partner-only or retake-only run replaces this bonus (or, on a different attempt, doesn't "
-              "add to it): give both with one award-bonus run. Each student also gets a comment.")
+              f"{len(awarded)} student(s), {total:g} point{'' if total == 1 else 's'} in total.")
+        print("Canvas replaces (does not add to) a bonus already on an attempt, so a later partner-only "
+              "or retake-only run won't add to this one and may replace it. Each student also gets a comment.")
         try:
             answer = input("Award these bonus points? [y/N]: ")
         except (EOFError, KeyboardInterrupt):
             print()   # end the prompt line that Ctrl-C / Ctrl-D left open
+            SEND_STOPPED_EARLY = True   # exit 130, as for a stopped send
             answer = ''
         if answer.strip().lower() != 'y':
             print("Cancelled; nothing was changed on Canvas.")
+            if not SEND_STOPPED_EARLY:
+                TASK_CANCELLED = True
             return False
         return True
 
@@ -3275,7 +3283,10 @@ class CanvigatorQuiz:
         quiz_summary['start'] = 'n/a'
         quiz_summary['finish'] = 'n/a'
         quiz_summary['minutes'] = 0.0
-        quiz_summary['score_w_bonus'] = 0.0
+        # Until a bonus is given on Canvas, a student's score is unchanged (e.g. no Canvas submission to put it on).
+        # astype(float): a whole-number score column would otherwise reject a fractional bonus (e.g. 8 + 1.5).
+        quiz_summary['score_w_bonus'] = quiz_summary['score'].astype(float)
+        quiz_summary['bonus_awarded'] = 0.0
 
         # Sort quiz_summary by the second word in 'name' column
         quiz_summary['lastname'] = quiz_summary['name'].str.split().str[1]
@@ -3359,6 +3370,7 @@ class CanvigatorQuiz:
                         logger.info(f"Awarded {bonus_val} bonus to student {sub.user_id}")
 
                 quiz_summary.at[row.index[0], 'score_w_bonus'] = row['score'].values[0] + bonus_val
+                quiz_summary.at[row.index[0], 'bonus_awarded'] = bonus_val
 
             else:
                 quiz_summary.at[row.index[0], 'score_w_bonus'] = row['score'].values[0]
@@ -3369,3 +3381,6 @@ class CanvigatorQuiz:
 
         if dry_run:
             print(f"\n[DRY RUN] No changes were made to Canvas. Review output: {quiz_summary_csv}")
+        else:
+            n_awarded = int((quiz_summary['bonus_awarded'] > 0).sum())
+            print(f"\nAwarded bonus points to {n_awarded} student(s) on Canvas. Scores saved: {quiz_summary_csv}")

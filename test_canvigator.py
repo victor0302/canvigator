@@ -11,9 +11,10 @@ from unittest.mock import MagicMock, patch
 
 @pytest.fixture(autouse=True)
 def _clear_send_stopped_flag(monkeypatch):
-    """Start every test with SEND_STOPPED_EARLY clear, so a stop in one test can't leak into the next."""
+    """Start every test with SEND_STOPPED_EARLY and TASK_CANCELLED clear, so one test can't leak into the next."""
     import canvigator_quiz as cq
     monkeypatch.setattr(cq, 'SEND_STOPPED_EARLY', False)
+    monkeypatch.setattr(cq, 'TASK_CANCELLED', False, raising=False)
 
 
 # ---------------------------------------------------------------------------
@@ -6430,7 +6431,7 @@ class TestAwardBonusConfirmation:
         with patch('builtins.input', return_value='y'):
             quiz.awardBonusPoints(dry_run=False)
         out = capsys.readouterr().out
-        assert '1 student(s), 1 points in total' in out
+        assert '1 student(s), 1 point in total' in out
         assert 'Bo Diaz' in out and 'no Canvas submission' in out
         sub.update_score_and_comments.assert_called_once()
 
@@ -6454,6 +6455,69 @@ class TestAwardBonusConfirmation:
         sub.update_score_and_comments.assert_not_called()
         assert 'Cancelled' in capsys.readouterr().out
         assert list(tmp_path.glob('*_scores_w_bonus*.csv')) == []
+
+    def test_typed_no_marks_the_task_cancelled_and_ctrl_c_marks_it_stopped(self, tmp_path):
+        """Enter at the prompt -> TASK_CANCELLED (the CLI prints 'Cancelled', not 'Done'); Ctrl-C -> stopped (exit 130)."""
+        import canvigator_quiz as cq
+        quiz, sub = self._quiz(tmp_path)
+        with patch('builtins.input', return_value=''):
+            quiz.awardBonusPoints(dry_run=False)
+        assert cq.TASK_CANCELLED is True and cq.SEND_STOPPED_EARLY is False
+        cq.TASK_CANCELLED = False
+        with patch('builtins.input', side_effect=KeyboardInterrupt()):
+            quiz.awardBonusPoints(dry_run=False)
+        assert cq.SEND_STOPPED_EARLY is True
+
+    def test_y_does_not_mark_the_task_cancelled(self, tmp_path):
+        """A confirmed award is a normal finish."""
+        import canvigator_quiz as cq
+        quiz, sub = self._quiz(tmp_path)
+        with patch('builtins.input', return_value='y'):
+            quiz.awardBonusPoints(dry_run=False)
+        assert cq.TASK_CANCELLED is False and cq.SEND_STOPPED_EARLY is False
+
+    def test_live_run_ends_with_a_summary_and_the_scores_file(self, tmp_path, capsys):
+        """After 'y': how many students got a bonus, and where the scores CSV went (the dry run already says so)."""
+        quiz, sub = self._quiz(tmp_path)
+        with patch('builtins.input', return_value='y'):
+            quiz.awardBonusPoints(dry_run=False)
+        out = capsys.readouterr().out
+        assert 'Awarded bonus points to 1 student(s) on Canvas.' in out
+        assert f'Scores saved: {tmp_path}/quiz3_999_scores_w_bonus_' in out   # the full path, as the dry run prints
+
+    def test_scores_csv_shows_which_bonuses_were_given(self, tmp_path):
+        """Bo earned 0.5 but has no Canvas submission: his score_w_bonus is his score (not 0.0) and bonus_awarded is 0."""
+        quiz, sub = self._quiz(tmp_path)
+        quiz.df_paired_students = pd.DataFrame({'id': [11, 12], 'bonus': [1.0, 0.5]})
+        quiz.quiz_df = pd.DataFrame({'name': ['Ann Lee', 'Bo Diaz'], 'id': [11, 12],
+                                     'n_correct': [3, 2], 'n_incorrect': [1, 2], 'score': [3.0, 2.0]})
+        quiz._loadAllSubmissions = lambda: pd.DataFrame({'id': [11, 12], 'score': [3.0, 2.0], 'attempt': [1, 1]})
+        with patch('builtins.input', return_value='y'):
+            quiz.awardBonusPoints(dry_run=False)
+        df = pd.read_csv(next(tmp_path.glob('*_scores_w_bonus_*.csv'))).set_index('id')
+        assert df.loc[11, 'score_w_bonus'] == 4.0 and df.loc[11, 'bonus_awarded'] == 1.0
+        assert df.loc[12, 'score_w_bonus'] == 2.0 and df.loc[12, 'bonus_awarded'] == 0.0
+
+    @pytest.mark.parametrize('dry_run', [False, True])
+    def test_whole_number_scores_with_a_fractional_bonus(self, tmp_path, dry_run):
+        """Report scores read as integers (8) plus a 1.5 bonus -> score_w_bonus 9.5, no dtype error partway through."""
+        quiz, sub = self._quiz(tmp_path)
+        quiz.df_paired_students = pd.DataFrame({'id': [11], 'bonus': [1.5]})
+        quiz.quiz_df = pd.DataFrame({'name': ['Ann Lee'], 'id': [11], 'n_correct': [8], 'n_incorrect': [2], 'score': [8]})
+        sub.score = 8
+        with patch('builtins.input', return_value='y'):
+            quiz.awardBonusPoints(dry_run=dry_run)
+        df = pd.read_csv(next(tmp_path.glob('*_scores_w_bonus*.csv')))
+        assert df.loc[0, 'score_w_bonus'] == 9.5
+        assert df.loc[0, 'bonus_awarded'] == 1.5   # in a dry run, what would be awarded
+
+    def test_ctrl_c_at_the_prompt_is_a_stop_not_a_cancel(self, tmp_path):
+        """Ctrl-C sets only the stopped flag (exit 130), not TASK_CANCELLED."""
+        import canvigator_quiz as cq
+        quiz, sub = self._quiz(tmp_path)
+        with patch('builtins.input', side_effect=KeyboardInterrupt()):
+            quiz.awardBonusPoints(dry_run=False)
+        assert cq.SEND_STOPPED_EARLY is True and cq.TASK_CANCELLED is False
 
     def test_y_awards(self, tmp_path):
         """'y' -> the bonus is set on the attempt."""
@@ -6623,6 +6687,33 @@ class TestSafetyFixFollowUps:
         assert text in result.stdout
         assert ('*** Done ***' in result.stdout) == (not stopped)
         assert result.stdout.count('Stopped early') == (1 if stopped else 0)   # the task's line only, not the banner too
+
+    def test_cli_cancelled_task_says_cancelled_not_done(self, tmp_path):
+        """Run the real canvigator.py with a task that cancels (as award-bonus does on Enter): 'Cancelled', no 'Done', exit 0."""
+        import os
+        import sys
+        wrapper = tmp_path / 'run_cli_cancel.py'
+        wrapper.write_text(
+            "import runpy, sys\n"
+            "from unittest.mock import MagicMock\n"
+            "import canvasapi, canvigator_utils as cu, canvigator_course as cc, canvigator_quiz as cq\n"
+            "canvasapi.Canvas = MagicMock()\n"
+            "cu.CanvigatorConfig = MagicMock()\n"
+            "cu.selectCourse = lambda canvas: MagicMock()\n"
+            "cc.CanvigatorCourse = MagicMock()\n"
+            "cu.selectCSVFromList = lambda *a, **k: 'tagged.csv'\n"
+            "cq.generateOpenEndedQuestions = lambda path: setattr(cq, 'TASK_CANCELLED', True)\n"
+            "sys.argv = ['canvigator.py', 'generate-follow-up-questions']\n"
+            "runpy.run_path('canvigator.py', run_name='__main__')\n"
+        )
+        env = {k: os.environ[k] for k in ('PATH', 'HOME', 'PYTHONHOME') if k in os.environ}
+        repo = str(Path(__file__).parent)
+        env.update(CANVAS_URL='https://canvas.invalid', CANVAS_TOKEN='fake', PYTHONPATH=repo)
+        result = subprocess.run([sys.executable, str(wrapper)], capture_output=True, text=True,
+                                cwd=repo, env=env, timeout=30)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert '*** Cancelled' in result.stdout
+        assert '*** Done ***' not in result.stdout
 
     def test_constructor_uses_the_safe_prefix(self, tmp_path):
         """CanvigatorQuiz.__init__ builds the file prefix with _quizNameFromTitle."""

@@ -503,4 +503,8 @@ if cq.SEND_STOPPED_EARLY:
     print("\n*** Exited early (code 130): see the messages above ***\n")
     sys.exit(130)
 
+if cq.TASK_CANCELLED:
+    print("\n*** Cancelled ***\n")
+    sys.exit(0)
+
 print("\n*** Done ***\n")
