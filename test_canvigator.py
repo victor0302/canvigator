@@ -6903,7 +6903,8 @@ class TestTaggingFailureReporting:
         """When every tagging call fails, no *_questions_w_tags_* file is written."""
         import canvigator_llm
         monkeypatch.setattr(canvigator_llm, '_make_client', lambda cloud=False: _fake_chat_client(lambda u: True))
-        with pytest.raises(RuntimeError, match='all 3 questions'):
+        import canvigator_quiz as cq
+        with pytest.raises(cq.TaggingFailedError, match='all 3 questions'):   # the error the --all loop skips past
             self._quiz(tmp_path).getQuizQuestions(tag=True)
         assert list(tmp_path.glob('*questions_w_tags*')) == []
 
@@ -7044,7 +7045,7 @@ class TestMissingRubricAndExemplarReport:
         monkeypatch.setattr(canvigator_llm, '_make_client', lambda cloud=False: _fake_chat_client(fail_some))
         with caplog.at_level('WARNING'):
             canvigator_quiz.generateOpenEndedQuestions(path)
-        msgs = [r.message for r in caplog.records if 'missing a rubric or example answers' in r.message]
+        msgs = [r.message for r in caplog.records if 'candidates are missing' in r.message]
         assert len(msgs) == 1
         assert '2 of 6 candidates' in msgs[0]
         assert 'Q1 candidate 2' in msgs[0] and 'Q2 candidate 3' in msgs[0]
@@ -7055,16 +7056,34 @@ class TestMissingRubricAndExemplarReport:
         from canvigator_quiz import _warnMissingRubricsOrExemplars
         rubric = json.dumps({'canonical_answer': 'x', 'pass_criteria': ['y']})
         rows = [
-            {'open_ended_question': 'Explain A.', 'position': 1, 'rubric_json': rubric, 'exemplar_pass': 'p', 'exemplar_fail': ''},
-            {'open_ended_question': 'Explain B.', 'position': 1, 'rubric_json': rubric, 'exemplar_pass': '', 'exemplar_fail': 'f'},
-            {'open_ended_question': 'Explain C.', 'position': 1, 'rubric_json': rubric, 'exemplar_pass': 'p', 'exemplar_fail': 'f'},
+            {'open_ended_question': 'Explain A.', 'position': 1, 'rubric_json': rubric, 'exemplar_pass': 'p', 'exemplar_fail': '',
+             'assessment_guide': 'g'},
+            {'open_ended_question': 'Explain B.', 'position': 1, 'rubric_json': rubric, 'exemplar_pass': '', 'exemplar_fail': 'f',
+             'assessment_guide': 'g'},
+            {'open_ended_question': 'Explain C.', 'position': 1, 'rubric_json': rubric, 'exemplar_pass': 'p', 'exemplar_fail': 'f',
+             'assessment_guide': 'g'},
         ]
         with caplog.at_level('WARNING'):
             _warnMissingRubricsOrExemplars(rows)
-        msgs = [r.message for r in caplog.records if 'missing a rubric or example answers' in r.message]
+        msgs = [r.message for r in caplog.records if 'candidates are missing' in r.message]
         assert len(msgs) == 1
         assert '2 of 3 candidates' in msgs[0]
         assert 'Q1 candidate 1' in msgs[0] and 'Q1 candidate 2' in msgs[0] and 'Q1 candidate 3' not in msgs[0]
+
+    def test_missing_assessment_guide_is_named(self, caplog):
+        """A failed guide call leaves the guide empty: that candidate is named; one with every part isn't."""
+        import json
+        from canvigator_quiz import _warnMissingRubricsOrExemplars
+        rubric = json.dumps({'canonical_answer': 'x', 'pass_criteria': ['y']})
+        full = {'open_ended_question': 'Explain A.', 'position': 2, 'rubric_json': rubric,
+                'exemplar_pass': 'p', 'exemplar_fail': 'f', 'assessment_guide': 'g'}
+        rows = [full, {**full, 'open_ended_question': 'Explain B.', 'assessment_guide': ''}]
+        with caplog.at_level('WARNING'):
+            _warnMissingRubricsOrExemplars(rows)
+        msgs = [r.message for r in caplog.records if 'candidates are missing' in r.message]
+        assert len(msgs) == 1
+        assert '1 of 2 candidates' in msgs[0] and 'Q2 candidate 2' in msgs[0] and 'Q2 candidate 1' not in msgs[0]
+        assert 'guide' in msgs[0]
 
     def test_complete_output_has_no_missing_warning(self, tmp_path, monkeypatch, caplog):
         """When every candidate has a rubric and exemplars, no such warning is logged."""
@@ -7076,3 +7095,63 @@ class TestMissingRubricAndExemplarReport:
         with caplog.at_level('WARNING'):
             canvigator_quiz.generateOpenEndedQuestions(path)
         assert not any('missing a rubric' in r.message for r in caplog.records)
+
+
+class TestAllTagContinuesPastFailedQuiz:
+    """`get-quiz-questions --all --tag`: a quiz whose tagging fails entirely doesn't stop the others; account errors do."""
+
+    @staticmethod
+    def _run_all_tag(tmp_path, failing_quiz, error):
+        """Run the real canvigator.py `get-quiz-questions --all --tag` over 3 quizzes (Canvas and the quiz faked)."""
+        import os
+        import sys
+        wrapper = tmp_path / 'run_all_tag.py'
+        wrapper.write_text(
+            "import runpy, sys\n"
+            "from types import SimpleNamespace\n"
+            "from unittest.mock import MagicMock\n"
+            "import canvasapi, canvigator_utils as cu, canvigator_course as cc, canvigator_quiz as cq, canvigator_llm\n"
+            "canvasapi.Canvas = MagicMock()\n"
+            "cu.CanvigatorConfig = MagicMock()\n"
+            "course = MagicMock()\n"
+            "course.get_quizzes.return_value = [SimpleNamespace(title=f'Quiz {i}', published=True) for i in (1, 2, 3)]\n"
+            "cu.selectCourse = lambda canvas: course\n"
+            "cc.CanvigatorCourse = MagicMock()\n"
+            "class FakeQuiz:\n"
+            "    def __init__(self, canvas, course, q, config, **kw):\n"
+            "        self.title = q.title\n"
+            "    def getQuizQuestions(self, tag=False):\n"
+            "        print(f'exported {self.title}')\n"
+            f"        if self.title == {failing_quiz!r}:\n"
+            f"            raise {error}('boom')\n"
+            "cq.CanvigatorQuiz = FakeQuiz\n"
+            "sys.argv = ['canvigator.py', 'get-quiz-questions', '--all', '--tag']\n"
+            "runpy.run_path('canvigator.py', run_name='__main__')\n"
+        )
+        env = {k: os.environ[k] for k in ('PATH', 'HOME', 'PYTHONHOME') if k in os.environ}
+        repo = str(Path(__file__).parent)
+        env.update(CANVAS_URL='https://canvas.invalid', CANVAS_TOKEN='fake', PYTHONPATH=repo)
+        return subprocess.run([sys.executable, str(wrapper)], capture_output=True, text=True, cwd=repo, env=env, timeout=30)
+
+    def test_all_tag_continues_past_a_quiz_where_tagging_failed(self, tmp_path):
+        """Quiz 2's tagging fails for every question -> quizzes 1 and 3 still run; Quiz 2 is named at the end; exit 1."""
+        result = self._run_all_tag(tmp_path, 'Quiz 2', 'cq.TaggingFailedError')
+        out = result.stdout
+        assert 'exported Quiz 1' in out and 'exported Quiz 2' in out and 'exported Quiz 3' in out
+        assert result.returncode == 1
+        assert 'Quiz 2' in out[out.index('exported Quiz 3'):]   # named again after the last quiz
+        assert '*** Done ***' not in out
+
+    def test_all_tag_stops_at_once_on_an_account_error(self, tmp_path):
+        """A rejected key / no credit on Quiz 1 -> stop before Quiz 2 (every other quiz would fail the same way)."""
+        result = self._run_all_tag(tmp_path, 'Quiz 1', 'canvigator_llm.LLMAccountError')
+        assert 'exported Quiz 1' in result.stdout
+        assert 'exported Quiz 2' not in result.stdout
+        assert result.returncode != 0
+        assert 'LLMAccountError' in result.stderr
+
+    def test_all_tag_other_errors_still_stop(self, tmp_path):
+        """Only the all-failed tagging error is skipped past; an unexpected error still stops the run."""
+        result = self._run_all_tag(tmp_path, 'Quiz 1', 'ValueError')
+        assert 'exported Quiz 2' not in result.stdout
+        assert result.returncode != 0

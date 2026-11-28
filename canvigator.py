@@ -457,10 +457,21 @@ elif task == 'generate-follow-up-questions':
 elif task == 'get-quiz-questions' and all_quizzes_flag:
     all_course_quizzes = [q for q in course_choice.get_quizzes() if getattr(q, 'published', False)]
     print(f"\nFound {len(all_course_quizzes)} published quiz(zes).")
+    tagging_failed = []
     for i, q in enumerate(all_course_quizzes, start=1):
         print(f"\n[{i}/{len(all_course_quizzes)}] {q.title}")
         quiz = cq.CanvigatorQuiz(canvas, course, q, canv_config, verbose=False, skip_student_data=True)
-        quiz.getQuizQuestions(tag=tag)
+        try:
+            quiz.getQuizQuestions(tag=tag)
+        except cq.TaggingFailedError as e:
+            # Go on to the other quizzes; an account error (rejected key, no credit) is not caught and still stops.
+            print(f"  {e}")
+            tagging_failed.append(q.title)
+    if tagging_failed:
+        names = ", ".join(f"'{t}'" for t in tagging_failed)
+        print(f"\nTagging failed for every question in {len(tagging_failed)} quiz(zes), so no tagged file was "
+              f"saved for: {names}. Re-run 'get-quiz-questions --tag' for those.")
+        sys.exit(1)
 
 else:
     # All remaining tasks require quiz selection
