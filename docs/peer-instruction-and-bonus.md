@@ -30,8 +30,11 @@ Per-task `--help` is also available from the CLI:
 
    Canvas **replaces** (does not add to) a bonus already on an attempt, so
    award both bonuses together with `award-bonus` rather than running
-   `award-bonus-partner-only` and later `award-bonus-retake-only`; the second
-   run would overwrite the first.
+   `award-bonus-partner-only` and later `award-bonus-retake-only`. The two
+   separate bonuses don't add up: when both runs pick the same best attempt
+   the second replaces the first, and when they pick different attempts the
+   quiz grade (with the default keep-highest scoring) still counts only one of
+   them.
 
 ---
 
@@ -91,8 +94,10 @@ must have been run first for the same quiz so that the submission CSVs exist.
 Use `--dry-run` to preview which students would receive bonus points without
 modifying anything in Canvas. In dry-run mode the scores CSV is named
 `*_scores_w_bonus_dryrun_*.csv`. A live run first shows how many students and
-points it will award and asks `[y/N]`; anything other than `y` cancels without
-changing Canvas or writing the scores CSV.
+points it will award and asks `[y/N]`; anything other than `y` (including
+Ctrl-C or Ctrl-D) cancels without changing Canvas or writing the scores CSV.
+Only students with a Canvas submission for the quiz are counted and awarded;
+any student who earned a bonus but has no submission is named and skipped.
 
 ---
 

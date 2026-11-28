@@ -6382,6 +6382,7 @@ class TestAwardBonusConfirmation:
         out = capsys.readouterr().out
         assert '1 student' in out and 'replaces' in out
         assert 'Cancelled' in out
+        assert list(tmp_path.glob('*_scores_w_bonus*.csv')) == []   # a cancelled run writes no scores CSV
 
     def test_summary_counts_only_students_getting_a_bonus(self, tmp_path, capsys):
         """Three students, two with a bonus (1.0 and 0.5) -> '2 student(s), 1.5 points', not 3 students."""
@@ -6390,10 +6391,48 @@ class TestAwardBonusConfirmation:
         quiz.quiz_df = pd.DataFrame({'name': ['Ann Lee', 'Bo Diaz', 'Cy Park'], 'id': [11, 12, 13],
                                      'n_correct': [3, 2, 4], 'n_incorrect': [1, 2, 0], 'score': [3.0, 2.0, 4.0]})
         quiz._loadAllSubmissions = lambda: pd.DataFrame({'id': [11, 12, 13], 'score': [3.0, 2.0, 4.0], 'attempt': [1, 1, 1]})
+        quiz.canvas_quiz.get_submissions = lambda: [
+            MagicMock(user_id=i, score=sc, attempt=1, started_at='s', finished_at='f', time_spent=60)
+            for i, sc in ((11, 3.0), (12, 2.0), (13, 4.0))]
         with patch('builtins.input', return_value=''):
             quiz.awardBonusPoints(dry_run=False)
         out = capsys.readouterr().out
         assert '2 student(s), 1.5 points in total' in out
+
+    def test_summary_counts_only_bonus_students_with_a_canvas_submission(self, tmp_path, capsys):
+        """Bonus for 11 (1.0) and 12 (0.5), but Canvas has no submission for 12 -> '1 student(s), 1 points', 12 named."""
+        quiz, sub = self._quiz(tmp_path)
+        quiz.df_paired_students = pd.DataFrame({'id': [11, 12], 'bonus': [1.0, 0.5]})
+        quiz.quiz_df = pd.DataFrame({'name': ['Ann Lee', 'Bo Diaz'], 'id': [11, 12],
+                                     'n_correct': [3, 2], 'n_incorrect': [1, 2], 'score': [3.0, 2.0]})
+        quiz._loadAllSubmissions = lambda: pd.DataFrame({'id': [11, 12], 'score': [3.0, 2.0], 'attempt': [1, 1]})
+        with patch('builtins.input', return_value='y'):
+            quiz.awardBonusPoints(dry_run=False)
+        out = capsys.readouterr().out
+        assert '1 student(s), 1 points in total' in out
+        assert 'Bo Diaz' in out and 'no Canvas submission' in out
+        sub.update_score_and_comments.assert_called_once()
+
+    def test_submission_from_a_student_not_in_the_report_is_skipped(self, tmp_path):
+        """A Canvas submission whose user isn't in the quiz report (e.g. the Test Student) doesn't crash the run."""
+        quiz, sub = self._quiz(tmp_path)
+        stranger = MagicMock(user_id=99, score=1.0, attempt=1, started_at='s', finished_at='f', time_spent=60)
+        quiz.canvas_quiz.get_submissions = lambda: [stranger, sub]
+        with patch('builtins.input', return_value='y'):
+            quiz.awardBonusPoints(dry_run=False)
+        sub.update_score_and_comments.assert_called_once_with(quiz_submissions=[{'attempt': 1, 'fudge_points': 1.0}])
+        stranger.update_score_and_comments.assert_not_called()
+        assert len(list(tmp_path.glob('*_scores_w_bonus_*.csv'))) == 1
+
+    @pytest.mark.parametrize('stop', [EOFError, KeyboardInterrupt])
+    def test_closed_input_or_ctrl_c_at_the_prompt_cancels(self, tmp_path, stop, capsys):
+        """Ctrl-D (closed input) or Ctrl-C at the [y/N] prompt -> 'Cancelled', nothing on Canvas, no scores CSV."""
+        quiz, sub = self._quiz(tmp_path)
+        with patch('builtins.input', side_effect=stop()):
+            quiz.awardBonusPoints(dry_run=False)
+        sub.update_score_and_comments.assert_not_called()
+        assert 'Cancelled' in capsys.readouterr().out
+        assert list(tmp_path.glob('*_scores_w_bonus*.csv')) == []
 
     def test_y_awards(self, tmp_path):
         """'y' -> the bonus is set on the attempt."""
@@ -6598,6 +6637,7 @@ class TestSafetyFixFollowUps:
         from canvigator_help import TASK_HELP
         text = TASK_HELP[task]['description']
         assert 'asks' in text and 'replaces' in text
+        assert 'keeps only the later one' not in text   # not true when the two runs pick different attempts
 
 
 # ---------------------------------------------------------------------------

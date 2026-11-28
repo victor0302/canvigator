@@ -3182,19 +3182,38 @@ class CanvigatorQuiz:
             quiz_summary.at[row_index, 'finish'] = sub.finished_at
             quiz_summary.at[row_index, 'minutes'] = sub.time_spent / 60.0
 
-    def _confirmBonusAward(self, quiz_summary):
-        """Show what a live award-bonus run will change on Canvas and ask; True only on 'y'."""
-        awarded = quiz_summary[quiz_summary['bonus'] > 0]
+    def _confirmBonusAward(self, quiz_summary, submitted_ids):
+        """Show what a live award-bonus run will change on Canvas and ask; True only on 'y'.
+
+        Only students with a Canvas submission are counted, because the award loop walks
+        the submissions; Ctrl-C or closed input at the prompt cancels.
+        """
+        awarded = quiz_summary[(quiz_summary['bonus'] > 0) & quiz_summary['id'].isin(submitted_ids)]
         if awarded.empty:
             return True
         print(f"\nAbout to award bonus points on Canvas for '{self.canvas_quiz.title}': "
               f"{len(awarded)} student(s), {awarded['bonus'].sum():g} points in total.")
         print("Canvas replaces any bonus already on a student's attempt (it does not add), so a later "
-              "partner-only or retake-only run overwrites this one. Each student also gets a comment.")
-        if input("Award these bonus points? [y/N]: ").strip().lower() != 'y':
+              "partner-only or retake-only run replaces this bonus (or, on a different attempt, doesn't "
+              "add to it): give both with one award-bonus run. Each student also gets a comment.")
+        try:
+            answer = input("Award these bonus points? [y/N]: ")
+        except (EOFError, KeyboardInterrupt):
+            print()   # end the prompt line that Ctrl-C / Ctrl-D left open
+            answer = ''
+        if answer.strip().lower() != 'y':
             print("Cancelled; nothing was changed on Canvas.")
             return False
         return True
+
+    @staticmethod
+    def _warnBonusWithoutSubmission(quiz_summary, submitted_ids):
+        """Print the students who earned a bonus but have no Canvas submission to put it on."""
+        missing = quiz_summary[(quiz_summary['bonus'] > 0) & ~quiz_summary['id'].isin(submitted_ids)]
+        if not missing.empty:
+            names = ", ".join(f"{r['name']} (id: {r['id']})" for _, r in missing.iterrows())
+            print(f"\nNote: {len(missing)} student(s) earned a bonus but have no Canvas submission, "
+                  f"so none is awarded: {names}")
 
     def awardBonusPoints(self, dry_run=False):
         """Award bonus points to students by setting fudge points (partner bonus, retake bonus, or both)."""
@@ -3237,7 +3256,12 @@ class CanvigatorQuiz:
         quiz_summary.drop(columns='lastname', inplace=True)
         quiz_summary.reset_index(drop=True, inplace=True)
 
-        if not dry_run and not self._confirmBonusAward(quiz_summary):
+        # The awards walk Canvas submissions, so count and confirm against the same list.
+        subs = list(self.canvas_quiz.get_submissions())
+        submitted_ids = {sub.user_id for sub in subs}
+        self._warnBonusWithoutSubmission(quiz_summary, submitted_ids)
+
+        if not dry_run and not self._confirmBonusAward(quiz_summary, submitted_ids):
             return
 
         # Get the Canvas Assignment corresponding to this quiz (needed for leaving submission comments)
@@ -3246,10 +3270,13 @@ class CanvigatorQuiz:
         if dry_run:
             print("\n=== DRY RUN MODE - No changes will be made to Canvas ===\n")
 
-        subs = self.canvas_quiz.get_submissions()
-        for _, sub in enumerate(subs):
+        for sub in subs:
             # Get row from quiz_summary where column 'id' matches sub.user_id
             row = quiz_summary[quiz_summary['id'] == sub.user_id]
+            if row.empty:
+                # e.g. the Test Student: on Canvas but not in the quiz report, so there's no bonus to give
+                logger.info(f"Skipping submission from user {sub.user_id}: not in the quiz report")
+                continue
 
             # Canvas may return a lower score than the student_analysis report if the
             # student retook the quiz and did worse than on their best attempt(s); log a note when they differ.

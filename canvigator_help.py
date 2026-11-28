@@ -160,8 +160,9 @@ TASK_HELP = {
             "they are reused instead of refetching."
             " A live run shows how many students and points it will award and "
             "asks [y/N] before changing anything. Canvas replaces (does not add "
-            "to) a bonus already on an attempt, so running partner-only and "
-            "retake-only separately keeps only the later one."
+            "to) a bonus already on an attempt, so give both bonuses with one "
+            "award-bonus run: separate partner-only and retake-only runs "
+            "don't add up."
         ),
         'prerequisites': [],
         'inputs': [
@@ -191,8 +192,9 @@ TASK_HELP = {
             "cache) so detection reflects every attempt through now."
             " A live run shows how many students and points it will award and "
             "asks [y/N] before changing anything. Canvas replaces (does not add "
-            "to) a bonus already on an attempt, so running partner-only and "
-            "retake-only separately keeps only the later one."
+            "to) a bonus already on an attempt, so give both bonuses with one "
+            "award-bonus run: separate partner-only and retake-only runs "
+            "don't add up."
         ),
         'prerequisites': [],
         'inputs': [
@@ -219,8 +221,9 @@ TASK_HELP = {
             "cache) so detection reflects every attempt through now."
             " A live run shows how many students and points it will award and "
             "asks [y/N] before changing anything. Canvas replaces (does not add "
-            "to) a bonus already on an attempt, so running partner-only and "
-            "retake-only separately keeps only the later one."
+            "to) a bonus already on an attempt, so give both bonuses with one "
+            "award-bonus run: separate partner-only and retake-only runs "
+            "don't add up."
         ),
         'prerequisites': [],
         'inputs': [
