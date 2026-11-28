@@ -430,7 +430,7 @@ def tag_question(row, client, model):
     except LLMAccountError:
         raise
     except Exception as e:
-        logger.warning(f"LLM tagging failed for question {row.get('question_id')}: {e}")
+        logger.warning(f"LLM tagging failed for {_question_ref(row)}: {e}")
         return []
 
 
@@ -463,7 +463,8 @@ def tag_questions(rows, model=None, progress=None):
         tags = tag_question(row, client, model)
         row["keywords"] = ", ".join(tags)
     if spin_done_fn:
-        spin_done_fn(f"Tagged {total} questions")
+        n_tagged = sum(1 for r in rows if r.get("keywords"))
+        spin_done_fn(f"Tagged {total} questions" if n_tagged == total else f"Tagged {n_tagged} of {total} questions")
     else:
         print("Tagging complete.")
 
@@ -560,7 +561,7 @@ def classify_question_mode(row, client, model):
     except LLMAccountError:
         raise
     except Exception as e:
-        logger.warning(f"LLM classify failed for question {row.get('question_id')}: {e}")
+        logger.warning(f"LLM classify failed for {_question_ref(row)}: {e}")
         return "explain"
 
 
@@ -588,7 +589,7 @@ def generate_open_ended_candidates(row, client, model, mode, n=3):
     except LLMAccountError:
         raise
     except Exception as e:
-        logger.warning(f"LLM generation failed for question {row.get('question_id')}: {e}")
+        logger.warning(f"LLM generation failed for {_question_ref(row)}: {e}")
         return []
 
 
@@ -638,7 +639,7 @@ def generate_assessment_guide(row, client, model, mode, open_ended_question):
     except LLMAccountError:
         raise
     except Exception as e:
-        logger.warning(f"LLM assessment-guide generation failed for question {row.get('question_id')}: {e}")
+        logger.warning(f"LLM assessment-guide generation failed for {_question_ref(row)}: {e}")
         return ""
 
 
@@ -741,7 +742,7 @@ def generate_structured_rubric(row, client, model, mode, open_ended_question):
     except LLMAccountError:
         raise
     except Exception as e:
-        logger.warning(f"LLM structured-rubric generation failed for question {row.get('question_id')}: {e}")
+        logger.warning(f"LLM structured-rubric generation failed for {_question_ref(row)}: {e}")
         return _empty_rubric(mode)
 
 
@@ -880,7 +881,7 @@ def generate_exemplars(row, client, model, mode, open_ended_question, rubric):
     except LLMAccountError:
         raise
     except Exception as e:
-        logger.warning(f"LLM exemplar generation failed for question {row.get('question_id')}: {e}")
+        logger.warning(f"LLM exemplar generation failed for {_question_ref(row)}: {e}")
         return dict(_EMPTY_EXEMPLARS)
 
 
@@ -1596,6 +1597,16 @@ def assess_replies(replies, question_info_row, model=None, audio_model=None,
     return results
 
 
+def _question_ref(row):
+    """Name a question in a warning as the end-of-run summaries do: 'Q2 (id 102)', or 'question 102' without a position."""
+    qid = row.get('question_id')
+    pos = row.get('position')
+    try:
+        return f"Q{int(pos)} (id {qid})"
+    except (TypeError, ValueError):
+        return f"question {qid}"
+
+
 def _question_label(row):
     """Short display label for a question row: its name, else its id, else '?'.
 
@@ -1673,11 +1684,11 @@ def generate_open_ended_questions(rows, model=None, n=3, progress=None):
             if not spin_fn:
                 print(" done")
             if not candidates:
-                logger.warning(f"No candidates generated for question {row.get('question_id')}")
+                logger.warning(f"No candidates generated for {_question_ref(row)}")
         except LLMAccountError:
             raise
         except Exception as e:
-            logger.warning(f"Question {row.get('question_id')} failed and was skipped: {e}")
+            logger.warning(f"{_question_ref(row)} failed and was skipped: {e}")
             if not spin_fn:
                 print(f" SKIPPED ({e})")
             mode = ''

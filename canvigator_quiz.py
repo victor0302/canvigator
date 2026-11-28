@@ -649,7 +649,8 @@ def _warnMissingRubricsOrExemplars(results):
             missing.append(f"Q{r['position']} candidate {seen[r['position']]}")
     if missing:
         logger.warning(
-            f"{len(missing)} of {n_candidates} candidates are missing a rubric, assessment guide or example answers "
+            f"{len(missing)} of {n_candidates} candidates {'is' if len(missing) == 1 else 'are'} missing a rubric, "
+            f"assessment guide or example answers "
             f"({', '.join(missing)}). Choose another candidate for those questions, re-run, or fill them in by hand."
         )
 
@@ -829,7 +830,7 @@ def _interactiveSend(canvas, messages, subject_str, header_label, send_all=False
         counts.append(f"{len(messages) - progress['done'] - progress['in_flight']} not sent")
         saving = " Saving the record of the sent message(s)." if n_sent else ""
         print(f"\n\nStopped early: {', '.join(counts)}.{saving}")
-        logger.warning(f"Interactive send interrupted: {', '.join(counts)}")
+        logger.info(f"Interactive send interrupted: {', '.join(counts)}")   # the line above is the console copy
         return sent_messages
 
     n_sent = len(sent_messages)

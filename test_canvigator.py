@@ -6780,6 +6780,16 @@ class TestStoppedSendOutput:
             assert '2 message(s) sent, 1 skipped.' in out
             assert 'not sent' not in out
 
+    def test_stop_summary_is_not_repeated_as_a_console_warning(self, caplog):
+        """The stop line is printed once; its log copy is INFO (log file only), not a WARNING echoed to the console."""
+        import canvigator_quiz as cq
+        canvas = MagicMock()
+        canvas.create_conversation.return_value = [SimpleNamespace(id=501)]
+        with caplog.at_level('INFO'), patch('builtins.input', side_effect=['y', KeyboardInterrupt()]):
+            cq._interactiveSend(canvas, self.MESSAGES, 'subj', 'hdr')
+        interrupted = [r for r in caplog.records if 'Interactive send interrupted' in r.message]
+        assert len(interrupted) == 1 and interrupted[0].levelname == 'INFO'
+
     def test_stop_during_the_canvas_call_counts_that_student_as_maybe_sent(self, capsys):
         """--send-all, Ctrl-C inside the 2nd send: that one may have reached Canvas, so it isn't counted as not sent."""
         import canvigator_quiz as cq
@@ -7141,7 +7151,7 @@ class TestMissingRubricAndExemplarReport:
         monkeypatch.setattr(canvigator_llm, '_make_client', lambda cloud=False: _fake_chat_client(fail_some))
         with caplog.at_level('WARNING'):
             canvigator_quiz.generateOpenEndedQuestions(path)
-        msgs = [r.message for r in caplog.records if 'candidates are missing' in r.message]
+        msgs = [r.message for r in caplog.records if 'missing a rubric, assessment guide or example answers' in r.message]
         assert len(msgs) == 1
         assert '2 of 6 candidates' in msgs[0]
         assert 'Q1 candidate 2' in msgs[0] and 'Q2 candidate 3' in msgs[0]
@@ -7161,7 +7171,7 @@ class TestMissingRubricAndExemplarReport:
         ]
         with caplog.at_level('WARNING'):
             _warnMissingRubricsOrExemplars(rows)
-        msgs = [r.message for r in caplog.records if 'candidates are missing' in r.message]
+        msgs = [r.message for r in caplog.records if 'missing a rubric, assessment guide or example answers' in r.message]
         assert len(msgs) == 1
         assert '2 of 3 candidates' in msgs[0]
         assert 'Q1 candidate 1' in msgs[0] and 'Q1 candidate 2' in msgs[0] and 'Q1 candidate 3' not in msgs[0]
@@ -7176,9 +7186,9 @@ class TestMissingRubricAndExemplarReport:
         rows = [full, {**full, 'open_ended_question': 'Explain B.', 'assessment_guide': ''}]
         with caplog.at_level('WARNING'):
             _warnMissingRubricsOrExemplars(rows)
-        msgs = [r.message for r in caplog.records if 'candidates are missing' in r.message]
+        msgs = [r.message for r in caplog.records if 'missing a rubric, assessment guide or example answers' in r.message]
         assert len(msgs) == 1
-        assert '1 of 2 candidates' in msgs[0] and 'Q2 candidate 2' in msgs[0] and 'Q2 candidate 1' not in msgs[0]
+        assert '1 of 2 candidates is missing' in msgs[0] and 'Q2 candidate 2' in msgs[0] and 'Q2 candidate 1' not in msgs[0]
         assert 'guide' in msgs[0]
 
     def test_complete_output_has_no_missing_warning(self, tmp_path, monkeypatch, caplog):
@@ -7251,3 +7261,77 @@ class TestAllTagContinuesPastFailedQuiz:
         result = self._run_all_tag(tmp_path, 'Quiz 1', 'ValueError')
         assert 'exported Quiz 2' not in result.stdout
         assert result.returncode != 0
+
+
+class TestGenerationMessagesNameQuestionsByPosition:
+    """Per-call generation warnings say 'Q2 (id 102)', as the end-of-run summaries do; the spinner counts failures."""
+
+    ROW = {'question_id': 102, 'position': 2, 'question_name': 'Q2', 'question_text': '<p>Question 2 text</p>',
+           'keywords': 'topic2', 'answers': '[]'}
+
+    @staticmethod
+    def _failing_client():
+        client = MagicMock()
+        client.chat.side_effect = ConnectionError('server unreachable')
+        return client
+
+    @pytest.mark.parametrize('call', [
+        lambda m, row, c: m.tag_question(row, c, 'model'),
+        lambda m, row, c: m.classify_question_mode(row, c, 'model'),
+        lambda m, row, c: m.generate_open_ended_candidates(row, c, 'model', 'explain'),
+        lambda m, row, c: m.generate_assessment_guide(row, c, 'model', 'explain', 'Explain it.'),
+        lambda m, row, c: m.generate_structured_rubric(row, c, 'model', 'explain', 'Explain it.'),
+        lambda m, row, c: m.generate_exemplars(row, c, 'model', 'explain', 'Explain it.',
+                                               {'canonical_answer': 'x', 'pass_criteria': ['y']}),
+    ])
+    def test_failed_call_names_the_question_by_position(self, call, caplog):
+        """A failed model call for question id 102 at position 2 is reported as 'Q2 (id 102)'."""
+        import canvigator_llm
+        with caplog.at_level('WARNING'):
+            call(canvigator_llm, dict(self.ROW), self._failing_client())
+        msgs = [r.message for r in caplog.records if 'failed for' in r.message]
+        assert msgs and all('Q2 (id 102)' in m for m in msgs), [r.message for r in caplog.records]
+
+    def test_no_candidates_warning_names_the_question_by_position(self, monkeypatch, caplog):
+        """Q2's candidate call fails -> 'No candidates generated for Q2 (id 102)'."""
+        import canvigator_llm
+        monkeypatch.setattr(canvigator_llm, '_make_client',
+                            lambda cloud=False: _fake_chat_client(lambda u: 'Question 2 text' in u))
+        with caplog.at_level('WARNING'):
+            canvigator_llm.generate_open_ended_questions(_gen_rows(3))
+        assert any('No candidates generated for Q2 (id 102)' in r.message for r in caplog.records), \
+            [r.message for r in caplog.records]
+
+    def test_skipped_question_warning_names_the_question_by_position(self, monkeypatch, caplog):
+        """An unexpected error for Q2 in the per-question loop -> 'Q2 (id 102) failed and was skipped'."""
+        import canvigator_llm
+        monkeypatch.setattr(canvigator_llm, '_make_client', lambda cloud=False: _fake_chat_client(lambda u: False))
+        real_classify = canvigator_llm.classify_question_mode
+
+        def classify(row, client, model):
+            if row.get('question_id') == 102:
+                raise ValueError('unexpected')
+            return real_classify(row, client, model)
+
+        monkeypatch.setattr(canvigator_llm, 'classify_question_mode', classify)
+        with caplog.at_level('WARNING'):
+            canvigator_llm.generate_open_ended_questions(_gen_rows(3))
+        assert any('Q2 (id 102) failed and was skipped' in r.message for r in caplog.records), \
+            [r.message for r in caplog.records]
+
+    def test_spinner_counts_only_the_questions_that_were_tagged(self, monkeypatch):
+        """3 questions, Q2's tagging fails -> 'Tagged 2 of 3 questions', not 'Tagged 3 questions'."""
+        import canvigator_llm
+        monkeypatch.setattr(canvigator_llm, '_make_client',
+                            lambda cloud=False: _fake_chat_client(lambda u: 'Question 2 text' in u))
+        done = []
+        canvigator_llm.tag_questions(_gen_rows(3), progress=(lambda i, msg: None, done.append))
+        assert done == ['Tagged 2 of 3 questions']
+
+    def test_spinner_wording_unchanged_when_all_were_tagged(self, monkeypatch):
+        """Every question tagged -> 'Tagged 3 questions'."""
+        import canvigator_llm
+        monkeypatch.setattr(canvigator_llm, '_make_client', lambda cloud=False: _fake_chat_client(lambda u: False))
+        done = []
+        canvigator_llm.tag_questions(_gen_rows(3), progress=(lambda i, msg: None, done.append))
+        assert done == ['Tagged 3 questions']
