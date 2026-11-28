@@ -171,14 +171,17 @@ each other. By default this uses the cloud-hosted text model
 to be set — see [Ollama setup](installation.md#ollama-setup-optional). The
 model can be overridden via `OLLAMA_TEXT_MODEL`.
 
-If tagging fails for some questions, the run ends with a warning naming them
-(e.g. "Q2"), and their `keywords` are empty. A rejected key or an account without
-credit stops the run at once, and no tagged file is saved when every question
-fails.
+If tagging fails for some questions, Canvigator logs a warning naming them
+(e.g. "Q2") and saves the file with their `keywords` empty. A rejected key or an
+account without credit stops the run at once, and no tagged file is saved when
+every question fails.
 
 Pass `--all` to skip the interactive quiz prompt and export every quiz in the
 selected course — one CSV per quiz, using each quiz's own filename prefix.
-`--all` and `--tag` can be used independently or together.
+`--all` and `--tag` can be used independently or together. With both, a quiz
+where tagging fails for every question gets no tagged file, but the run goes on
+to the other quizzes, names the failed ones at the end and exits with code 1; a
+rejected key or an account without credit still stops the run at once.
 
 ---
 
@@ -237,11 +240,13 @@ on exactly one row per question group** before running
 `*_questions_w_tags_*.csv` for the same quiz. Requires `OLLAMA_API_KEY` to be
 set — see [Ollama setup](installation.md#ollama-setup-optional).
 
-If a model call for one candidate fails, that candidate's rubric or example
-answers are left empty, and the run ends with a warning naming those candidates
-(e.g. "Q2 candidate 1") so you can choose another one or fill them in. A rejected
-key or an account without credit stops the run at once, and no file is saved when
-every question fails.
+If a model call for one candidate fails, that candidate's rubric, assessment
+guide or example answers are left empty, and Canvigator logs a warning naming
+those candidates (e.g. "Q2 candidate 1") so you can choose another one or fill
+them in. If no candidates come back for some questions, it logs a warning naming
+those questions (e.g. "1 of 3 questions got no candidates (Q2)") and leaves their
+rows empty; re-run to retry. A rejected key or an account without credit stops
+the run at once, and no file is saved when every question fails.
 
 | | Files |
 |---|---|
@@ -276,10 +281,12 @@ When not in `--dry-run` mode, the instructor is prompted for each student
 with a full message preview and a `[y/N]` choice (default: skip), so
 every send is reviewed before going to Canvas.
 
-Stopping partway (Ctrl-C, or Ctrl-D at a prompt) is safe: the reminders
+Stopping partway (Ctrl-C, or Ctrl-D at a `[y/N]` prompt) is safe: the reminders
 already sent are still written to the `*_reminder_sent_*.csv` log, Canvigator
 prints "Stopped early", and it exits with code 130 instead of 0. A re-run does
-not skip students who were already reminded, so check the log first. If you
+not skip students who were already reminded, so check the log first; a re-run
+with `--send-all` messages every one of them again, so re-run without it and
+skip those students at their prompts. If you
 stop while a message is being sent, that one may reach Canvas without being
 logged; Canvigator names that student so you can check Canvas, and if it
 arrived, skip them on the re-run.
@@ -357,7 +364,7 @@ messages the instructor approves are sent and recorded in the manifest.
 Submissions are auto-refreshed via `getAllSubmissionsAndEvents()` on every
 run so the recipient list reflects the latest attempts.
 
-Stopping partway (Ctrl-C, or Ctrl-D at a prompt) is safe: the students already
+Stopping partway (Ctrl-C, or Ctrl-D at a `[y/N]` prompt) is safe: the students already
 messaged are recorded in the manifest, so running the task again won't message
 them twice. Canvigator prints "Stopped early" and exits with code 130 instead
 of 0. If you stop while a message is being sent, that one may reach Canvas
@@ -491,7 +498,7 @@ The expected workflow is to **edit the `feedback` column** between
 `assess-replies` and `send-follow-up-assessments` for any rows where the LLM
 assessment needs correction; the curated text is what the student sees.
 
-Stopping partway (Ctrl-C, or Ctrl-D at a prompt) is safe: rows already sent
+Stopping partway (Ctrl-C, or Ctrl-D at a `[y/N]` prompt) is safe: rows already sent
 are saved with `sent_assessment=1`, so running the task again won't send them
 twice. Canvigator prints "Stopped early" and exits with code 130 instead of 0.
 If you stop while a message is being sent, that one may reach Canvas without

@@ -515,9 +515,10 @@ TASK_HELP = {
             "published, future-due quiz. If the quiz's submission CSVs were "
             "written within the last 10 minutes, they are reused instead of "
             "refetching from Canvas — making the typical dry-run-then-real "
-            "workflow fast on the second run. Stopping partway (Ctrl-C / "
-            "Ctrl-D) keeps the log of reminders already sent and exits with "
-            "code 130; a re-run does not skip students already reminded."
+            "workflow fast on the second run. Stopping partway (Ctrl-C, or "
+            "Ctrl-D at a [y/N] prompt) keeps the log of reminders already sent and exits with "
+            "code 130; a re-run does not skip students already reminded, and "
+            "with --send-all it messages all of them again."
         ),
         'prerequisites': [
             "get-quiz-questions --tag must have produced "
@@ -570,7 +571,7 @@ TASK_HELP = {
             "assignment is refused (one delivery method per question). "
             "Message delivery, step 1 of 3; the "
             "assignment-delivery equivalent is create-follow-up-assignment. "
-            "Stopping partway (Ctrl-C / Ctrl-D) records the students already "
+            "Stopping partway (Ctrl-C, or Ctrl-D at a [y/N] prompt) records the students already "
             "messaged, so a re-run skips them, and exits with code 130."
         ),
         'prerequisites': [
@@ -675,7 +676,7 @@ TASK_HELP = {
             "Message delivery, step 3 of 3; the "
             "assignment-delivery equivalent is "
             "review-return-follow-up-assignment. "
-            "Stopping partway (Ctrl-C / Ctrl-D) saves the rows already sent, "
+            "Stopping partway (Ctrl-C, or Ctrl-D at a [y/N] prompt) saves the rows already sent, "
             "so a re-run doesn't resend them, and exits with code 130."
         ),
         'prerequisites': [
