@@ -6334,9 +6334,14 @@ class TestSendTasksKeepRecordsAfterStop:
         assert self._sent_to(quiz.canvas) == [11]
 
         quiz.canvas.create_conversation.reset_mock()
+        # Each send now gets its own conversation id, so the record can be checked student by student.
+        quiz.canvas.create_conversation.side_effect = lambda ids, *a, **k: [SimpleNamespace(id=500 + int(ids[0]))]
         with patch('builtins.input', return_value='y'):
             quiz.sendFollowUpQuestions()
         assert self._sent_to(quiz.canvas) == [12, 13]
+        record = pd.read_csv(files[0])   # same day: the re-run appends to the first run's record
+        assert record['student_id'].tolist() == [11, 12, 13]
+        assert record['conversation_id'].tolist() == [501, 512, 513]
 
 
 class TestManifestLookupWithSpecialTitles:
